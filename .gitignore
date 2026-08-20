@@ -1,0 +1,20 @@
+# AWS credentials and config
+.aws/
+credentials
+config
+
+# Local environment files
+*.env
+.env
+.env.local
+
+# IDE/System files
+.DS_Store
+.vscode/
+.idea/
+
+# Terraform/infrastructure state (if you use them later)
+*.tfstate
+*.tfstate.backup
+
+
