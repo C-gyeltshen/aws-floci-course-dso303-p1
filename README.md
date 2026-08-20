@@ -1,12 +1,45 @@
-# P1 Project
+cat > README.md << 'EOF'
+# AWS CLI + Floci — USMS Course Project
 
-This is the root directory for the P1 project.
+Infrastructure for the **University Student Management System (USMS)**, built lab by lab
+with the AWS CLI against [Floci](https://floci.io), a local AWS emulator.
 
-## Structure
+## Quick start
 
-- `report/` - project report files
-- `images/` - images and related assets
+```bash
+source configs/course.env
+./scripts/setup/floci-up.sh
+./scripts/utilities/whoami.sh
+```
 
-## Notes
+## Daily workflow
 
-Add project description, setup instructions, and usage notes here as needed.
+```bash
+./scripts/setup/floci-up.sh      # start or resume (idempotent)
+# ... lab work ...
+./scripts/setup/floci-down.sh    # pause; state is kept
+```
+
+## Never run these
+
+| Command | Why |
+|---|---|
+| `docker compose down -v` | `-v` deletes volumes |
+| `docker volume prune` | Unfiltered; use scripts/cleanup/floci-prune-volumes.sh |
+| `floci start ...` | Bypasses Compose; disables persistence |
+| `rm -rf ~/floci-data` | That directory is the IAM state |
+
+## Labs
+
+| Lab | Topic | Status |
+|-----|-------|--------|
+| 01  | IAM   | [x] complete |
+| 02  | VPC   | [ ] not started |
+
+## Conventions
+
+- All resources are prefixed `usms-`
+- Region: `us-east-1`  ·  Floci account: `000000000000`
+- Storage mode: `hybrid`, bind-mounted to `~/floci-data`
+- Secrets live in `outputs/` and are **never** committed
+EOF
