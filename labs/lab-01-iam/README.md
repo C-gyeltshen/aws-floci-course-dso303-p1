@@ -50,5 +50,31 @@ tree
 
 ### Write .gitignore and initialise Git — before any secret exists
 
+```bash
+touch .gitignore
+git init
+git add .
+git commit -m "wip: p1"
+git remote add origin https://github.com/C-gyeltshen/aws-floci-course-dso303-p1.git
+git branch -M main
+git push -u origin main
+```
+![6](../../screenshots/lab1/6.png)
+
+### Floci Storage Models Overview
+
+Floci provides two distinct storage modes for persisting state across container restarts and setups:
+
+#### ***1. Ephemeral Mode (Default)***
+* **Behavior:** Data is stored strictly in container memory/tmpfs.
+* **Persistence:** All IAM users, roles, policies, and S3 objects are completely wiped when the Docker container stops or restarts.
+* **Use Case:** Quick isolated testing, stateless CI/CD runs, and quick experimentations where persistent state is unnecessary.
+
+#### ***2. Persistent Mode***
+* **Behavior:** Floci maps state data to a host directory using a Docker bind mount (configured via `FLOCI_HOST_DATA_DIR`).
+* **Persistence:** AWS resources and configurations persist across container restarts and system reboots.
+
+### Step 8 — Write docker-compose.yml and configs/course.env
+
 
 

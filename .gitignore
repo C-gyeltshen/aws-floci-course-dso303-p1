@@ -1,20 +1,28 @@
-# AWS credentials and config
-.aws/
-credentials
-config
+# ---- Command output and SECRETS ----
+# NOTE the trailing /* — see the explanation below. It matters.
+outputs/*
+!outputs/.gitkeep
 
-# Local environment files
-*.env
+# ---- Generated Compose configuration ----
+# floci-up.sh writes this. It holds machine-specific absolute paths.
 .env
 .env.local
 
-# IDE/System files
+# ---- Emulator state ----
+floci-data/
+data/
+.floci/
+
+# ---- Credentials of every shape ----
+*.pem
+*.key
+*-access-key.json
+*credentials*
+
+# ---- OS / editor noise ----
 .DS_Store
+Thumbs.db
+*.swp
 .vscode/
 .idea/
-
-# Terraform/infrastructure state (if you use them later)
-*.tfstate
-*.tfstate.backup
-
-
+EOF
