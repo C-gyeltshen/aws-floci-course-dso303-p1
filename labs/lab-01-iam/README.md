@@ -606,3 +606,6 @@ git add .
 git commit -m "wip: p2"
 git push
 ```
+verification
+![59](../../screenshots/lab2/41.png)
+
