@@ -225,3 +225,384 @@ Creating scripts/utilities/floci-storage-check.sh and running it.
 cleanup script for stray volume
 ![18](../../screenshots/lab1/18.png)
 
+Push Part A to GitHub
+
+```bash
+git add .
+git commit -m "wip: p1"
+git push
+```
+![19](../../screenshots/lab1/19.png)
+
+
+## PART B — Building the IAM Foundation
+
+### Step 17 — Inspect the empty IAM account
+
+```bash
+aws iam list-users
+```
+![20](../../screenshots/lab2/1.png)
+
+```bash
+aws iam list-users --output json
+aws iam list-users --output table
+aws iam list-users --output text
+```
+![21](../../screenshots/lab2/2.png)
+
+### Step 18 — Create the IAM groups
+
+```bash
+aws iam create-group --group-name usms-admins
+aws iam create-group --group-name usms-developers
+aws iam create-group --group-name usms-auditors
+```
+![22](../../screenshots/lab2/3.png)
+
+verify
+```bash
+aws iam list-groups --query 'Groups[*].[GroupName,Arn]' --output table
+```
+![23](../../screenshots/lab2/4.png)
+
+### Step 19 — Create the IAM users and capture their ARNs
+
+```bash
+ADMIN_ARN=$(aws iam create-user \
+  --user-name usms-admin-01 \
+  --tags Key=Project,Value=USMS Key=Role,Value=Administrator \
+  --query 'User.Arn' \
+  --output text)
+
+DEV_ARN=$(aws iam create-user \
+  --user-name usms-dev-01 \
+  --tags Key=Project,Value=USMS Key=Role,Value=Developer \
+  --query 'User.Arn' \
+  --output text)
+
+AUDIT_ARN=$(aws iam create-user \
+  --user-name usms-audit-01 \
+  --tags Key=Project,Value=USMS Key=Role,Value=Auditor \
+  --query 'User.Arn' \
+  --output text)
+
+echo "$ADMIN_ARN"
+echo "$DEV_ARN"
+echo "$AUDIT_ARN"
+```
+![24](../../screenshots/lab2/5.png)
+
+verify 
+```bash
+aws iam list-users \
+  --query 'Users[*].{User:UserName,Created:CreateDate,Arn:Arn}' \
+  --output table
+```
+![25](../../screenshots/lab2/6.png)
+
+### Step 20 — Add users to groups
+
+```bash
+aws iam add-user-to-group --group-name usms-admins     --user-name usms-admin-01
+aws iam add-user-to-group --group-name usms-developers --user-name usms-dev-01
+aws iam add-user-to-group --group-name usms-auditors   --user-name usms-audit-01
+```
+![26](../../screenshots/lab2/7.png)
+
+### Step 21 — Explore and attach an AWS managed policy
+
+```bash
+aws iam attach-group-policy \
+  --group-name usms-auditors \
+  --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
+```
+![27](../../screenshots/lab2/8.png)
+
+verify
+```bash
+aws iam list-attached-group-policies --group-name usms-auditors --output table
+```
+![28](../../screenshots/lab2/9.png)
+
+### Step 22 — Write your first customer managed policy
+
+![29](../../screenshots/lab2/10.png)
+
+verify the json before sending it
+```bash 
+cd policies
+python3 -m json.tool usms-developer-base-policy.json > /dev/null && echo "Valid JSON"
+```
+![30](../../screenshots/lab2/11.png)
+
+create the policy
+```bash
+DEV_POLICY_ARN=$(aws iam create-policy \
+  --policy-name USMSDeveloperBase \
+  --description "Read infrastructure + build VPC networking for USMS. Denies identity escalation." \
+  --policy-document file://usms-developer-base-policy.json \
+  --query 'Policy.Arn' \
+  --output text)
+
+echo "$DEV_POLICY_ARN"
+```
+![31](../../screenshots/lab2/12.png)
+
+Attach it to both groups that need it
+```bash
+aws iam attach-group-policy --group-name usms-developers --policy-arn "$DEV_POLICY_ARN"
+aws iam attach-group-policy --group-name usms-admins     --policy-arn "$DEV_POLICY_ARN"
+```
+![32](../../screenshots/lab2/13.png)
+
+verify
+```bash
+aws iam list-attached-group-policies --group-name usms-developers --output table
+aws iam get-policy --policy-arn "$DEV_POLICY_ARN" \
+  --query 'Policy.{Name:PolicyName,Attached:AttachmentCount,Default:DefaultVersionId}' \
+  --output table
+```
+![33](../../screenshots/lab2/14.png)
+
+### Step 23 — Write the S3 data policy (used for real in Lab 4)
+
+```bash
+cd policies
+touch usms-student-data-rw-policy.json
+
+S3_POLICY_ARN=$(aws iam create-policy \
+  --policy-name USMSStudentDataReadWrite \
+  --description "Read/write student transcripts in the USMS bucket. Bucket deletion denied." \
+  --policy-document file://usms-student-data-rw-policy.json \
+  --query 'Policy.Arn' --output text)
+
+echo "$S3_POLICY_ARN"
+```
+![34](../../screenshots/lab2/15.png)
+
+verify
+```bash
+aws iam list-policies --scope Local \
+  --query 'Policies[*].{Name:PolicyName,Attached:AttachmentCount}' --output table
+```
+![35](../../screenshots/lab2/16.png)
+
+### Step 24 — Use --generate-cli-skeleton to discover parameters
+
+```bash 
+cd templates
+aws iam create-role --generate-cli-skeleton > create-role-skeleton.json
+cat create-role-skeleton.json
+```
+![36](../../screenshots/lab2/17.png)
+
+### Step 25 — Add an inline policy
+
+```bash   
+cd policies
+touch usms-self-manage-credentials.json
+```
+![37](../../screenshots/lab2/18.png)
+
+verify 
+```bash
+aws iam list-user-policies --user-name usms-dev-01
+aws iam get-user-policy --user-name usms-dev-01 --policy-name USMSSelfManageCredentials
+```
+![38](../../screenshots/lab2/19.png)
+
+### Step 26 — Inspect what you have built
+```bash
+IAM_USER=usms-dev-01
+echo "=== groups ===";      aws iam list-groups-for-user       --user-name $IAM_USER --query 'Groups[*].GroupName'                --output text
+echo "=== attached ===";    aws iam list-attached-user-policies --user-name $IAM_USER --query 'AttachedPolicies[*].PolicyName'    --output text
+echo "=== inline ===";      aws iam list-user-policies          --user-name $IAM_USER --query 'PolicyNames'                       --output text
+echo "=== access keys ==="; aws iam list-access-keys            --user-name $IAM_USER --query 'AccessKeyMetadata[*].AccessKeyId'  --output text
+```
+![39](../../screenshots/lab2/20.png)
+
+```bash 
+POLICY_ARN=arn:aws:iam::000000000000:policy/USMSDeveloperBase
+VER=$(aws iam get-policy --policy-arn $POLICY_ARN --query 'Policy.DefaultVersionId' --output text)
+
+aws iam get-policy-version \
+  --policy-arn $POLICY_ARN \
+  --version-id $VER \
+  --query 'PolicyVersion.Document'
+```
+![40](../../screenshots/lab2/21.png)
+
+### Step 27 — Policy versions
+```bash 
+python3 - << 'PY'
+import json, pathlib
+p = pathlib.Path("usms-developer-base-policy.json")
+doc = json.loads(p.read_text())
+for st in doc["Statement"]:
+    if st.get("Sid") == "BuildNetworkingForLab02":
+        st["Action"] += ["ec2:DeleteVpc", "ec2:DescribeAvailabilityZones"]
+pathlib.Path("usms-developer-base-policy-v2.json").write_text(json.dumps(doc, indent=2))
+print("wrote usms-developer-base-policy-v2.json")
+PY
+
+aws iam create-policy-version \
+  --policy-arn arn:aws:iam::000000000000:policy/USMSDeveloperBase \
+  --policy-document file://usms-developer-base-policy-v2.json \
+  --set-as-default
+
+```
+![41](../../screenshots/lab2/23.png)
+
+verfiy 
+```bash
+aws iam list-policy-versions \
+  --policy-arn arn:aws:iam::000000000000:policy/USMSDeveloperBase \
+  --query 'Versions[*].{Version:VersionId,Default:IsDefaultVersion,Created:CreateDate}' \
+  --output table
+```
+![42](../../screenshots/lab2/24.png)
+
+### Step 28 — Create a role for EC2, with a trust policy
+```bash 
+EC2_ROLE_ARN=$(aws iam create-role \
+  --role-name usms-ec2-app-role \
+  --description "Role for the USMS application server (Lab 03). Grants S3 access to student data." \
+  --assume-role-policy-document file://trust-ec2.json \
+  --tags Key=Project,Value=USMS \
+  --query 'Role.Arn' --output text)
+
+echo "$EC2_ROLE_ARN"
+```
+![43](../../screenshots/lab2/25.png)
+
+providing permissions to each role 
+```bash
+aws iam attach-role-policy \
+  --role-name usms-ec2-app-role \
+  --policy-arn arn:aws:iam::000000000000:policy/USMSStudentDataReadWrite
+
+```
+![44](../../screenshots/lab2/26.png)
+```bash
+aws iam get-role --role-name usms-ec2-app-role \
+  --query 'Role.{Name:RoleName,Arn:Arn,Trust:AssumeRolePolicyDocument.Statement[0].Principal}' \
+  --output json
+
+aws iam list-attached-role-policies --role-name usms-ec2-app-role --output table
+```
+![45](../../screenshots/lab2/27.png)
+
+
+Create the instance profile
+```bash 
+aws iam create-instance-profile --instance-profile-name usms-ec2-app-profile
+
+aws iam add-role-to-instance-profile \
+  --instance-profile-name usms-ec2-app-profile \
+  --role-name usms-ec2-app-role
+```
+![46](../../screenshots/lab2/28.png)
+
+verify
+```bash 
+aws iam get-instance-profile --instance-profile-name usms-ec2-app-profile \
+  --query 'InstanceProfile.{Profile:InstanceProfileName,Roles:Roles[*].RoleName}' \
+  --output json
+```
+![47](../../screenshots/lab2/29.png)
+
+### Step 29 — Create the Lambda execution role
+![48](../../screenshots/lab2/30.png)
+
+![49](../../screenshots/lab2/31.png)
+
+### Step 30 — A role for humans, and temporary credentials with STS¶
+```bash 
+DEVROLE_ARN=$(aws iam create-role \
+  --role-name usms-developer-role \
+  --description "Elevated build permissions, assumed temporarily by USMS developers." \
+  --assume-role-policy-document file://trust-account-developers.json \
+  --max-session-duration 3600 \
+  --query 'Role.Arn' --output text)
+
+aws iam attach-role-policy \
+  --role-name usms-developer-role \
+  --policy-arn arn:aws:iam::000000000000:policy/USMSDeveloperBase
+
+echo "$DEVROLE_ARN"
+```
+![50](../../screenshots/lab2/32.png)
+
+![51](../../screenshots/lab2/33.png)
+
+ Use the temporary credentials, then put your identity back
+
+ ```bash 
+export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId'         outputs/assumed-role.json)
+export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' outputs/assumed-role.json)
+export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken'        outputs/assumed-role.json)
+
+aws sts get-caller-identity --endpoint-url http://localhost:4566 --region us-east-1
+```
+![52](../../screenshots/lab2/34.png)
+
+```bash 
+unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+./scripts/utilities/whoami.sh
+```
+![53](../../screenshots/lab2/35.png)
+
+### Step 31 — Access keys, handled safely¶
+
+```bash 
+aws iam create-access-key --user-name usms-dev-01 \
+  > outputs/usms-dev-01-access-key.json
+
+chmod 600 outputs/usms-dev-01-access-key.json
+```
+![54](../../screenshots/lab2/36.png)
+
+verify
+```bash
+aws iam list-access-keys --user-name usms-dev-01 \
+  --query 'AccessKeyMetadata[*].{Key:AccessKeyId,Status:Status,Created:CreateDate}' \
+  --output table
+```
+![55](../../screenshots/lab2/37.png)
+
+### Step 32 — Test permissions with the policy simulator¶
+
+```bash 
+aws iam simulate-principal-policy \
+  --policy-source-arn arn:aws:iam::000000000000:user/usms-dev-01 \
+  --action-names "ec2:CreateVpc" "iam:CreateUser" "s3:GetObject" \
+  --query 'EvaluationResults[*].{Action:EvalActionName,Decision:EvalDecision}' \
+  --output table
+```
+![56](../../screenshots/lab2/38.png)
+
+### Step 33 — Save the lab state for future labs
+
+```bash
+grep -n 'export .*=$\|None' configs/lab-01.env || echo "all values populated"
+```
+
+```bash 
+source configs/course.env
+source configs/lab-01.env
+echo "EC2 role  : $USMS_ROLE_EC2"
+echo "Dev policy: $USMS_POLICY_DEV_BASE"
+```
+![57](../../screenshots/lab2/39.png)
+
+floci snapshort 
+![58](../../screenshots/lab2/40.png)
+
+Pushing Part B to GitHub
+
+```bash
+git add .
+git commit -m "wip: p2"
+git push
+```

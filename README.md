@@ -1,4 +1,3 @@
-cat > README.md << 'EOF'
 # AWS CLI + Floci — USMS Course Project
 
 Infrastructure for the **University Student Management System (USMS)**, built lab by lab
