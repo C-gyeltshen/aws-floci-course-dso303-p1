@@ -59,7 +59,7 @@ shell = /bin/zsh
 home  = /Users/chimigyeltshen
 ```
 
-![Step 1](../../screenshots/lab1/1.png)
+![Step 1](../../screenshots/lab1-stepA/1.png)
 
 ### Step 2 — Verify Docker and Docker Compose
 
@@ -69,7 +69,7 @@ docker info --format '{{.ServerVersion}}'
 docker compose version
 ```
 
-![Step 2](../../screenshots/lab1/2.png)
+![Step 2](../../screenshots/lab1-stepA/2.png)
 
 ### Step 3 — Install the Floci CLI
 
@@ -77,7 +77,7 @@ docker compose version
 floci version
 ```
 
-![Step 3](../../screenshots/lab1/3.png)
+![Step 3](../../screenshots/lab1-stepA/3.png)
 
 ### Step 4 — Run Floci's environment diagnostics
 
@@ -85,7 +85,7 @@ floci version
 floci doctor
 ```
 
-![Step 4](../../screenshots/lab1/4.png)
+![Step 4](../../screenshots/lab1-stepA/4.png)
 
 ### Step 5 — Create the course directory structure
 
@@ -93,7 +93,7 @@ floci doctor
 tree
 ```
 
-![Step 5](../../screenshots/lab1/5.png)
+![Step 5](../../screenshots/lab1-stepA/5.png)
 
 ### Write `.gitignore` and initialise Git — before any secret exists
 
@@ -107,7 +107,7 @@ git branch -M main
 git push -u origin main
 ```
 
-![Git init](../../screenshots/lab1/6.png)
+![Git init](../../screenshots/lab1-stepA/6.png)
 
 ### Floci Storage Models Overview
 
@@ -130,7 +130,7 @@ Floci provides two distinct storage modes for persisting state across container 
 docker compose config >/dev/null && echo "compose file is valid"
 ```
 
-![Step 8](../../screenshots/lab1/7.png)
+![Step 8](../../screenshots/lab1-stepA/7.png)
 
 ### Step 9 — Write the start/stop scripts and bring Floci up
 
@@ -143,7 +143,7 @@ chmod +x scripts/setup/floci-down.sh
 ./scripts/setup/floci-up.sh
 ```
 
-![Step 9](../../screenshots/lab1/8.png)
+![Step 9](../../screenshots/lab1-stepA/8.png)
 
 > **Note:** A Floci container from Lab 0 was already running, so it had to be stopped and removed before bringing up Lab 1.
 
@@ -155,7 +155,7 @@ sudo installer -pkg AWSCLIV2.pkg -target /
 rm AWSCLIV2.pkg
 ```
 
-![Step 10](../../screenshots/lab1/9.png)
+![Step 10](../../screenshots/lab1-stepA/9.png)
 
 ### AWS Core Concepts: Credentials, Regions, and Profiles
 
@@ -200,8 +200,8 @@ aws configure set output                json                  --profile floci
 aws configure set endpoint_url          http://localhost:4566 --profile floci
 ```
 
-![Step 12a](../../screenshots/lab1/10.png)
-![Step 12b](../../screenshots/lab1/11.png)
+![Step 12a](../../screenshots/lab1-stepA/10.png)
+![Step 12b](../../screenshots/lab1-stepA/11.png)
 
 ### Step 13 — Your first AWS CLI command, and the whoami helper
 
@@ -209,8 +209,8 @@ aws configure set endpoint_url          http://localhost:4566 --profile floci
 aws sts get-caller-identity --profile floci
 ```
 
-![Step 13a](../../screenshots/lab1/12.png)
-![Step 13b](../../screenshots/lab1/13.png)
+![Step 13a](../../screenshots/lab1-stepA/12.png)
+![Step 13b](../../screenshots/lab1-stepA/13.png)
 
 ### Step 14 — Prove isolation from real AWS, and prove persistence
 
@@ -225,7 +225,7 @@ aws sts get-caller-identity --profile floci --debug 2>&1 \
 aws sts get-caller-identity --profile floci
 ```
 
-![Step 14](../../screenshots/lab1/14.png)
+![Step 14](../../screenshots/lab1-stepA/14.png)
 
 **Persist the data:**
 
@@ -245,7 +245,7 @@ until curl -sf http://localhost:4566/_floci/health >/dev/null 2>&1; do sleep 2; 
 aws iam get-user --user-name persistence-check --query 'User.UserName' --output text
 ```
 
-![Step 14 persistence](../../screenshots/lab1/15.png)
+![Step 14 persistence](../../screenshots/lab1-stepA/15.png)
 
 **Clean up the marker:**
 
@@ -263,17 +263,17 @@ aws iam get-user --user-name does-not-exist > /dev/null 2>&1
 echo "exit code = $?"
 ```
 
-![Step 14 exit codes](../../screenshots/lab1/16.png)
+![Step 14 exit codes](../../screenshots/lab1-stepA/16.png)
 
 ### Step 15 — Storage diagnostics, README, and commit Part A
 
 Created `scripts/utilities/floci-storage-check.sh` and ran it.
 
-![Step 15](../../screenshots/lab1/17.png)
+![Step 15](../../screenshots/lab1-stepA/17.png)
 
 Cleanup script for stray volume:
 
-![Step 15 cleanup](../../screenshots/lab1/18.png)
+![Step 15 cleanup](../../screenshots/lab1-stepA/18.png)
 
 **Push Part A to GitHub:**
 
@@ -283,7 +283,7 @@ git commit -m "wip: p1"
 git push
 ```
 
-![Step 15 push](../../screenshots/lab1/19.png)
+![Step 15 push](../../screenshots/lab1-stepA/19.png)
 
 ---
 
@@ -295,7 +295,7 @@ git push
 aws iam list-users
 ```
 
-![Step 17](../../screenshots/lab2/1.png)
+![Step 17](../../screenshots/lab1-stepB/1.png)
 
 ```bash
 aws iam list-users --output json
@@ -303,7 +303,7 @@ aws iam list-users --output table
 aws iam list-users --output text
 ```
 
-![Step 17 outputs](../../screenshots/lab2/2.png)
+![Step 17 outputs](../../screenshots/lab1-stepB/2.png)
 
 ### Step 18 — Create the IAM groups
 
@@ -313,7 +313,7 @@ aws iam create-group --group-name usms-developers
 aws iam create-group --group-name usms-auditors
 ```
 
-![Step 18](../../screenshots/lab2/3.png)
+![Step 18](../../screenshots/lab1-stepB/3.png)
 
 **Verify:**
 
@@ -321,7 +321,7 @@ aws iam create-group --group-name usms-auditors
 aws iam list-groups --query 'Groups[*].[GroupName,Arn]' --output table
 ```
 
-![Step 18 verify](../../screenshots/lab2/4.png)
+![Step 18 verify](../../screenshots/lab1-stepB/4.png)
 
 ### Step 19 — Create the IAM users and capture their ARNs
 
@@ -349,7 +349,7 @@ echo "$DEV_ARN"
 echo "$AUDIT_ARN"
 ```
 
-![Step 19](../../screenshots/lab2/5.png)
+![Step 19](../../screenshots/lab1-stepB/5.png)
 
 **Verify:**
 
@@ -359,7 +359,7 @@ aws iam list-users \
   --output table
 ```
 
-![Step 19 verify](../../screenshots/lab2/6.png)
+![Step 19 verify](../../screenshots/lab1-stepB/6.png)
 
 ### Step 20 — Add users to groups
 
@@ -369,7 +369,7 @@ aws iam add-user-to-group --group-name usms-developers --user-name usms-dev-01
 aws iam add-user-to-group --group-name usms-auditors   --user-name usms-audit-01
 ```
 
-![Step 20](../../screenshots/lab2/7.png)
+![Step 20](../../screenshots/lab1-stepB/7.png)
 
 ### Step 21 — Explore and attach an AWS managed policy
 
@@ -379,7 +379,7 @@ aws iam attach-group-policy \
   --policy-arn arn:aws:iam::aws:policy/ReadOnlyAccess
 ```
 
-![Step 21](../../screenshots/lab2/8.png)
+![Step 21](../../screenshots/lab1-stepB/8.png)
 
 **Verify:**
 
@@ -387,11 +387,11 @@ aws iam attach-group-policy \
 aws iam list-attached-group-policies --group-name usms-auditors --output table
 ```
 
-![Step 21 verify](../../screenshots/lab2/9.png)
+![Step 21 verify](../../screenshots/lab1-stepB/9.png)
 
 ### Step 22 — Write your first customer managed policy
 
-![Step 22](../../screenshots/lab2/10.png)
+![Step 22](../../screenshots/lab1-stepB/10.png)
 
 **Validate the JSON before sending it:**
 
@@ -400,7 +400,7 @@ cd policies
 python3 -m json.tool usms-developer-base-policy.json > /dev/null && echo "Valid JSON"
 ```
 
-![Step 22 validate](../../screenshots/lab2/11.png)
+![Step 22 validate](../../screenshots/lab1-stepB/11.png)
 
 **Create the policy:**
 
@@ -415,7 +415,7 @@ DEV_POLICY_ARN=$(aws iam create-policy \
 echo "$DEV_POLICY_ARN"
 ```
 
-![Step 22 create](../../screenshots/lab2/12.png)
+![Step 22 create](../../screenshots/lab1-stepB/12.png)
 
 **Attach it to both groups that need it:**
 
@@ -424,7 +424,7 @@ aws iam attach-group-policy --group-name usms-developers --policy-arn "$DEV_POLI
 aws iam attach-group-policy --group-name usms-admins     --policy-arn "$DEV_POLICY_ARN"
 ```
 
-![Step 22 attach](../../screenshots/lab2/13.png)
+![Step 22 attach](../../screenshots/lab1-stepB/13.png)
 
 **Verify:**
 
@@ -435,7 +435,7 @@ aws iam get-policy --policy-arn "$DEV_POLICY_ARN" \
   --output table
 ```
 
-![Step 22 verify attach](../../screenshots/lab2/14.png)
+![Step 22 verify attach](../../screenshots/lab1-stepB/14.png)
 
 ### Step 23 — Write the S3 data policy (used for real in Lab 4)
 
@@ -452,7 +452,7 @@ S3_POLICY_ARN=$(aws iam create-policy \
 echo "$S3_POLICY_ARN"
 ```
 
-![Step 23](../../screenshots/lab2/15.png)
+![Step 23](../../screenshots/lab1-stepB/15.png)
 
 **Verify:**
 
@@ -461,7 +461,7 @@ aws iam list-policies --scope Local \
   --query 'Policies[*].{Name:PolicyName,Attached:AttachmentCount}' --output table
 ```
 
-![Step 23 verify](../../screenshots/lab2/16.png)
+![Step 23 verify](../../screenshots/lab1-stepB/16.png)
 
 ### Step 24 — Use `--generate-cli-skeleton` to discover parameters
 
@@ -471,7 +471,7 @@ aws iam create-role --generate-cli-skeleton > create-role-skeleton.json
 cat create-role-skeleton.json
 ```
 
-![Step 24](../../screenshots/lab2/17.png)
+![Step 24](../../screenshots/lab1-stepB/17.png)
 
 ### Step 25 — Add an inline policy
 
@@ -480,7 +480,7 @@ cd policies
 touch usms-self-manage-credentials.json
 ```
 
-![Step 25](../../screenshots/lab2/18.png)
+![Step 25](../../screenshots/lab1-stepB/18.png)
 
 **Verify:**
 
@@ -489,7 +489,7 @@ aws iam list-user-policies --user-name usms-dev-01
 aws iam get-user-policy --user-name usms-dev-01 --policy-name USMSSelfManageCredentials
 ```
 
-![Step 25 verify](../../screenshots/lab2/19.png)
+![Step 25 verify](../../screenshots/lab1-stepB/19.png)
 
 ### Step 26 — Inspect what you have built
 
@@ -501,7 +501,7 @@ echo "=== inline ===";      aws iam list-user-policies          --user-name $IAM
 echo "=== access keys ==="; aws iam list-access-keys            --user-name $IAM_USER --query 'AccessKeyMetadata[*].AccessKeyId'  --output text
 ```
 
-![Step 26](../../screenshots/lab2/20.png)
+![Step 26](../../screenshots/lab1-stepB/20.png)
 
 ```bash
 POLICY_ARN=arn:aws:iam::000000000000:policy/USMSDeveloperBase
@@ -513,7 +513,7 @@ aws iam get-policy-version \
   --query 'PolicyVersion.Document'
 ```
 
-![Step 26 policy document](../../screenshots/lab2/21.png)
+![Step 26 policy document](../../screenshots/lab1-stepB/21.png)
 
 ### Step 27 — Policy versions
 
@@ -535,7 +535,7 @@ aws iam create-policy-version \
   --set-as-default
 ```
 
-![Step 27](../../screenshots/lab2/23.png)
+![Step 27](../../screenshots/lab1-stepB/23.png)
 
 **Verify:**
 
@@ -546,7 +546,7 @@ aws iam list-policy-versions \
   --output table
 ```
 
-![Step 27 verify](../../screenshots/lab2/24.png)
+![Step 27 verify](../../screenshots/lab1-stepB/24.png)
 
 ### Step 28 — Create a role for EC2, with a trust policy
 
@@ -561,7 +561,7 @@ EC2_ROLE_ARN=$(aws iam create-role \
 echo "$EC2_ROLE_ARN"
 ```
 
-![Step 28](../../screenshots/lab2/25.png)
+![Step 28](../../screenshots/lab1-stepB/25.png)
 
 **Attach permissions to the role:**
 
@@ -571,7 +571,7 @@ aws iam attach-role-policy \
   --policy-arn arn:aws:iam::000000000000:policy/USMSStudentDataReadWrite
 ```
 
-![Step 28 attach](../../screenshots/lab2/26.png)
+![Step 28 attach](../../screenshots/lab1-stepB/26.png)
 
 ```bash
 aws iam get-role --role-name usms-ec2-app-role \
@@ -581,7 +581,7 @@ aws iam get-role --role-name usms-ec2-app-role \
 aws iam list-attached-role-policies --role-name usms-ec2-app-role --output table
 ```
 
-![Step 28 verify](../../screenshots/lab2/27.png)
+![Step 28 verify](../../screenshots/lab1-stepB/27.png)
 
 **Create the instance profile:**
 
@@ -593,7 +593,7 @@ aws iam add-role-to-instance-profile \
   --role-name usms-ec2-app-role
 ```
 
-![Step 28 instance profile](../../screenshots/lab2/28.png)
+![Step 28 instance profile](../../screenshots/lab1-stepB/28.png)
 
 **Verify:**
 
@@ -603,12 +603,12 @@ aws iam get-instance-profile --instance-profile-name usms-ec2-app-profile \
   --output json
 ```
 
-![Step 28 verify instance profile](../../screenshots/lab2/29.png)
+![Step 28 verify instance profile](../../screenshots/lab1-stepB/29.png)
 
 ### Step 29 — Create the Lambda execution role
 
-![Step 29a](../../screenshots/lab2/30.png)
-![Step 29b](../../screenshots/lab2/31.png)
+![Step 29a](../../screenshots/lab1-stepB/30.png)
+![Step 29b](../../screenshots/lab1-stepB/31.png)
 
 ### Step 30 — A role for humans, and temporary credentials with STS
 
@@ -627,8 +627,8 @@ aws iam attach-role-policy \
 echo "$DEVROLE_ARN"
 ```
 
-![Step 30a](../../screenshots/lab2/32.png)
-![Step 30b](../../screenshots/lab2/33.png)
+![Step 30a](../../screenshots/lab1-stepB/32.png)
+![Step 30b](../../screenshots/lab1-stepB/33.png)
 
 **Use the temporary credentials, then restore your identity:**
 
@@ -640,14 +640,14 @@ export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken'        outputs/assu
 aws sts get-caller-identity --endpoint-url http://localhost:4566 --region us-east-1
 ```
 
-![Step 30 assumed role](../../screenshots/lab2/34.png)
+![Step 30 assumed role](../../screenshots/lab1-stepB/34.png)
 
 ```bash
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
 ./scripts/utilities/whoami.sh
 ```
 
-![Step 30 restore identity](../../screenshots/lab2/35.png)
+![Step 30 restore identity](../../screenshots/lab1-stepB/35.png)
 
 ### Step 31 — Access keys, handled safely
 
@@ -658,7 +658,7 @@ aws iam create-access-key --user-name usms-dev-01 \
 chmod 600 outputs/usms-dev-01-access-key.json
 ```
 
-![Step 31](../../screenshots/lab2/36.png)
+![Step 31](../../screenshots/lab1-stepB/36.png)
 
 **Verify:**
 
@@ -668,7 +668,7 @@ aws iam list-access-keys --user-name usms-dev-01 \
   --output table
 ```
 
-![Step 31 verify](../../screenshots/lab2/37.png)
+![Step 31 verify](../../screenshots/lab1-stepB/37.png)
 
 ### Step 32 — Test permissions with the policy simulator
 
@@ -680,7 +680,7 @@ aws iam simulate-principal-policy \
   --output table
 ```
 
-![Step 32](../../screenshots/lab2/38.png)
+![Step 32](../../screenshots/lab1-stepB/38.png)
 
 ### Step 33 — Save the lab state for future labs
 
@@ -695,11 +695,11 @@ echo "EC2 role  : $USMS_ROLE_EC2"
 echo "Dev policy: $USMS_POLICY_DEV_BASE"
 ```
 
-![Step 33](../../screenshots/lab2/39.png)
+![Step 33](../../screenshots/lab1-stepB/39.png)
 
 **Floci snapshot:**
 
-![Step 33 snapshot](../../screenshots/lab2/40.png)
+![Step 33 snapshot](../../screenshots/lab1-stepB/40.png)
 
 **Push Part B to GitHub:**
 
@@ -709,8 +709,10 @@ git commit -m "wip: p2"
 git push
 ```
 
-![Step 33 push](../../screenshots/lab2/42.png)
+![Step 33 push](../../screenshots/lab1-stepB/42.png)
 
 **Verification:**
 
-![Step 33 verify push](../../screenshots/lab2/41.png)
+![Step 33 verify push](../../screenshots/lab1-stepB/41.png)
+
+ 

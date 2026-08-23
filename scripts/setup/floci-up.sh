@@ -69,6 +69,3 @@ case "$mount_src" in
 esac
 
 log "Floci is up at $FLOCI_ENDPOINT"
-EOF
-
-chmod +x scripts/setup/floci-up.sh
