@@ -628,5 +628,10 @@ echo "vpc=$USMS_VPC_ID  public-a=$USMS_PUBLIC_SUBNET_A  app-sg=$USMS_APP_SG"
 
 #### Command part 1, look before you add
 ```bash
-
+git add .
+git commit -m "wip: report"
+git push
 ```
+![47](../../screenshots/lab2/47.png)
+
+
