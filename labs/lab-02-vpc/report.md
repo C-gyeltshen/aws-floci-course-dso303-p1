@@ -1,24 +1,74 @@
-# Virtual Private Cloud and Networking
+# Lab 2: Virtual Private Cloud and Networking
+
+## Aim / Objective
+
+The aim of this lab is to create a Virtual Private Cloud (VPC) with public and private subnets, configure security groups and network ACLs, and set up internet access for the private subnet using a NAT gateway. This provides a secure and isolated network environment for deploying applications.
+
+## Introduction
+
+In this lab, a VPC is built with the following components:
+
+- A public subnet in the `us-east-1a` availability zone
+- A private subnet in the `us-east-1a` availability zone
+- An internet gateway for the public subnet
+- A NAT gateway for the private subnet
+- Security groups for the application and database tiers
+
+## Use Cases
+
+### 1. Multi-Tier Enterprise E-Commerce Platform Architecture
+
+**Scenario:** A scalable web application (e.g., an e-commerce platform) hosting a Next.js/React front end, a web/API server, a PostgreSQL database, and media storage.
+
+**VPC Implementation:**
+- **Public Subnet** — Houses the Application Load Balancer (ALB) and public-facing web servers with direct Internet Gateway access.
+- **Private Subnet** — Houses the application backend services and database servers (e.g., Amazon RDS/PostgreSQL) with no public IP assignment.
+- **NAT Gateway** — Enables private database instances to securely fetch software updates, OS security patches, and third-party API dependencies without direct public inbound access.
+- **S3 Gateway Endpoint** — Allows application instances and database backups to communicate directly with Amazon S3 over the internal AWS network, reducing latency and eliminating data transfer costs over the public internet.
+
+### 2. Secure Microservices & Database Isolation
+
+**Scenario:** A fintech or healthcare platform handling sensitive user data with compliance requirements.
+
+**VPC Implementation:**
+- Strict network perimeter control using stateful Security Groups that reference other Security Groups (e.g., allowing database traffic only from instances attached to the Application Security Group).
+- Layered defense with stateless Network ACLs (NACLs) acting as a subnet-boundary firewall to block specific malicious traffic patterns or untrusted IP ranges.
+
+### 3. Private Cloud Data Lake & Asset Storage Pipeline
+
+**Scenario:** Processing sensitive analytics files, raw backups, or user uploads within S3 buckets.
+
+**VPC Implementation:**
+- Routing all S3 traffic inside the VPC via an S3 VPC Gateway Endpoint.
+- Ensuring data transfers remain entirely on AWS internal network infrastructure, improving security compliance and eliminating internet egress bandwidth charges.
+
+## System Architecture
+
+![System Architecture](../../screenshots/lab2/54.png)
 
 ## Step-by-Step Implementation
 
-### Step 1 Resume the environment
+### Step 1 — Resume the Environment
 
 ```bash
 cd ~/aws-floci-course
 ./scripts/setup/floci-up.sh
 ./scripts/utilities/floci-storage-check.sh
 ```
-![1](../../screenshots/lab2/1.png)
-![2](../../screenshots/lab2/2.png)
-verify 
+
+![Resume environment](../../screenshots/lab2/1.png)
+![Storage check](../../screenshots/lab2/2.png)
+
+Verify:
+
 ```bash
 docker rm -f floci
 ./scripts/setup/floci-up.sh
 ```
-![3](../../screenshots/lab2/3.png)
 
-### Step 2 Load the previous lab's environment and confirm your identity
+![Verify container](../../screenshots/lab2/3.png)
+
+### Step 2 — Load the Previous Lab's Environment and Confirm Identity
 
 ```bash
 source configs/course.env
@@ -30,10 +80,12 @@ echo "developer role : $USMS_ROLE_DEVELOPER"
 echo "developer user : $USMS_DEV_USER"
 echo "account        : $USMS_ACCOUNT_ID"
 ```
-![4](../../screenshots/lab2/4.png)
 
-### Step 3 Assume the developer role and create the VPC
-#### Command part 1, read the policy before you rely on it
+![Confirm identity](../../screenshots/lab2/4.png)
+
+### Step 3 — Assume the Developer Role and Create the VPC
+
+**Part 1 — Read the policy before relying on it**
 
 ```bash
 POLICY_ARN="arn:aws:iam::${USMS_ACCOUNT_ID}:policy/USMSDeveloperBase"
@@ -51,9 +103,10 @@ aws iam get-policy-version \
   --query 'PolicyVersion.Document' \
   --output json | tee outputs/lab-02-developer-base.json
 ```
-![5](../../screenshots/lab2/5.png)
 
-#### Command part 2, assume the role
+![Read policy](../../screenshots/lab2/5.png)
+
+**Part 2 — Assume the role**
 
 ```bash
 ROLE_ARN="arn:aws:iam::${USMS_ACCOUNT_ID}:role/${USMS_ROLE_DEVELOPER}"
@@ -72,9 +125,10 @@ export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken'    outputs/lab-02-a
 
 aws sts get-caller-identity --no-cli-pager
 ```
-![6](../../screenshots/lab2/6.png)
 
-#### Command part 3, create the VPC
+![Assume role](../../screenshots/lab2/6.png)
+
+**Part 3 — Create the VPC**
 
 ```bash
 VPC_ID=$(aws ec2 create-vpc \
@@ -85,9 +139,11 @@ VPC_ID=$(aws ec2 create-vpc \
 
 echo "VPC_ID = $VPC_ID"
 ```
-!`[7](../../screenshots/lab2/7.png)
 
-### Step 4 Restore your normal identity
+![VPC created](../../screenshots/lab2/48.png)
+![VPC ID output](../../screenshots/lab2/7.png)
+
+### Step 4 — Restore Normal Identity
 
 ```bash
 unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
@@ -99,19 +155,21 @@ aws ec2 describe-vpcs \
   --query 'Vpcs[0].{Id:VpcId,CIDR:CidrBlock,State:State,Default:IsDefault,Tenancy:InstanceTenancy}' \
   --output table
 ```
-![8](../../screenshots/lab2/8.png)
 
-### Step 5 Enable DNS support and DNS hostnames
+![Restore identity](../../screenshots/lab2/8.png)
+
+### Step 5 — Enable DNS Support and DNS Hostnames
 
 ```bash
 aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-support   '{"Value":true}'
 aws ec2 modify-vpc-attribute --vpc-id "$VPC_ID" --enable-dns-hostnames '{"Value":true}'
 ```
-![9](../../screenshots/lab2/9.png)
 
-Verify
+![Enable DNS](../../screenshots/lab2/9.png)
 
-```bash 
+Verify:
+
+```bash
 for attr in enableDnsSupport enableDnsHostnames; do
   printf "%-20s " "$attr"
   aws ec2 describe-vpc-attribute \
@@ -121,9 +179,10 @@ for attr in enableDnsSupport enableDnsHostnames; do
     --output text
 done
 ```
-![10](../../screenshots/lab2/10.png)
 
-### Step 6 Create and attach the internet gateway
+![Verify DNS](../../screenshots/lab2/10.png)
+
+### Step 6 — Create and Attach the Internet Gateway
 
 ```bash
 IGW_ID=$(aws ec2 create-internet-gateway \
@@ -137,19 +196,21 @@ aws ec2 attach-internet-gateway \
   --internet-gateway-id "$IGW_ID" \
   --vpc-id "$VPC_ID"
 ```
-![11](../../screenshots/lab2/11.png)
 
-verify 
+![Create IGW](../../screenshots/lab2/11.png)
 
-```bash 
+Verify:
+
+```bash
 aws ec2 describe-internet-gateways \
   --internet-gateway-ids "$IGW_ID" \
   --query 'InternetGateways[0].{Id:InternetGatewayId,Attachments:Attachments}' \
   --output json
 ```
-![12](../../screenshots/lab2/12.png)
 
-### Step 7 Create the public subnet in us-east-1a
+![Verify IGW](../../screenshots/lab2/12.png)
+
+### Step 7 — Create the Public Subnet in us-east-1a
 
 ```bash
 PUBLIC_SUBNET_A_ID=$(aws ec2 create-subnet \
@@ -162,9 +223,11 @@ PUBLIC_SUBNET_A_ID=$(aws ec2 create-subnet \
 
 echo "PUBLIC_SUBNET_A_ID = $PUBLIC_SUBNET_A_ID"
 ```
-![13](../../screenshots/lab2/13.png)
 
-verify
+![Create public subnet](../../screenshots/lab2/13.png)
+![Public subnet detail](../../screenshots/lab2/49.png)
+
+Verify:
 
 ```bash
 aws ec2 describe-subnets \
@@ -172,9 +235,10 @@ aws ec2 describe-subnets \
   --query 'Subnets[0].{Id:SubnetId,CIDR:CidrBlock,AZ:AvailabilityZone,Free:AvailableIpAddressCount,PublicIP:MapPublicIpOnLaunch,State:State}' \
   --output table
 ```
-![14](../../screenshots/lab2/14.png)
 
-### Step 8 Turn on auto-assign public IPv4 for the public subnet
+![Verify public subnet](../../screenshots/lab2/14.png)
+
+### Step 8 — Enable Auto-Assign Public IPv4 for the Public Subnet
 
 ```bash
 aws ec2 modify-subnet-attribute \
@@ -186,9 +250,10 @@ aws ec2 describe-subnets \
   --query 'Subnets[0].MapPublicIpOnLaunch' \
   --output text
 ```
-![15](../../screenshots/lab2/15.png)
 
-### Step 9 Create the private subnet in us-east-1a
+![Auto-assign public IP](../../screenshots/lab2/15.png)
+
+### Step 9 — Create the Private Subnet in us-east-1a
 
 ```bash
 PRIVATE_SUBNET_A_ID=$(aws ec2 create-subnet \
@@ -201,9 +266,11 @@ PRIVATE_SUBNET_A_ID=$(aws ec2 create-subnet \
 
 echo "PRIVATE_SUBNET_A_ID = $PRIVATE_SUBNET_A_ID"
 ```
-![16](../../screenshots/lab2/16.png)
 
-verify
+![Create private subnet](../../screenshots/lab2/16.png)
+![Private subnet detail](../../screenshots/lab2/50.png)
+
+Verify:
 
 ```bash
 aws ec2 describe-subnets \
@@ -211,9 +278,10 @@ aws ec2 describe-subnets \
   --query 'sort_by(Subnets, &CidrBlock)[].{Name:Tags[?Key==`Name`]|[0].Value,CIDR:CidrBlock,AZ:AvailabilityZone,Public:MapPublicIpOnLaunch}' \
   --output table
 ```
-![17](../../screenshots/lab2/17.png)
 
-### Step 10 Create the public route table and the default route
+![Verify both subnets](../../screenshots/lab2/17.png)
+
+### Step 10 — Create the Public Route Table and Default Route
 
 ```bash
 PUBLIC_RT_ID=$(aws ec2 create-route-table \
@@ -229,9 +297,10 @@ aws ec2 create-route \
   --destination-cidr-block 0.0.0.0/0 \
   --gateway-id "$IGW_ID"
 ```
-![18](../../screenshots/lab2/18.png)
 
-verify 
+![Create public route table](../../screenshots/lab2/18.png)
+
+Verify:
 
 ```bash
 aws ec2 describe-route-tables \
@@ -239,11 +308,12 @@ aws ec2 describe-route-tables \
   --query 'RouteTables[0].Routes[].{Destination:DestinationCidrBlock,Target:GatewayId,State:State}' \
   --output table
 ```
-![19](../../screenshots/lab2/19.png)
 
-### Step 11 Associate the public subnet with the public route table
+![Verify public route table](../../screenshots/lab2/19.png)
 
-```bash 
+### Step 11 — Associate the Public Subnet with the Public Route Table
+
+```bash
 PUBLIC_ASSOC_A_ID=$(aws ec2 associate-route-table \
   --route-table-id "$PUBLIC_RT_ID" \
   --subnet-id "$PUBLIC_SUBNET_A_ID" \
@@ -252,9 +322,12 @@ PUBLIC_ASSOC_A_ID=$(aws ec2 associate-route-table \
 
 echo "PUBLIC_ASSOC_A_ID = $PUBLIC_ASSOC_A_ID"
 ```
-![20](../../screenshots/lab2/20.png)
 
-### Step 12 Create the private route table and associate the private subnet
+![Associate public subnet](../../screenshots/lab2/51.png)
+![Association confirmation](../../screenshots/lab2/20.png)
+
+### Step 12 — Create the Private Route Table and Associate the Private Subnet
+
 ```bash
 PRIVATE_RT_ID=$(aws ec2 create-route-table \
   --vpc-id "$VPC_ID" \
@@ -272,9 +345,10 @@ PRIVATE_ASSOC_A_ID=$(aws ec2 associate-route-table \
 
 echo "PRIVATE_ASSOC_A_ID = $PRIVATE_ASSOC_A_ID"
 ```
-![21](../../screenshots/lab2/21.png)
 
-### Step 13 Prove the two subnets are actually different
+![Create private route table](../../screenshots/lab2/21.png)
+
+### Step 13 — Prove the Two Subnets Are Actually Different
 
 ```bash
 for s in "$PUBLIC_SUBNET_A_ID" "$PRIVATE_SUBNET_A_ID"; do
@@ -293,9 +367,11 @@ for s in "$PUBLIC_SUBNET_A_ID" "$PRIVATE_SUBNET_A_ID"; do
          "$name" "$s" "$rt" "$igw"
 done
 ```
-![22](../../screenshots/lab2/22.png)
 
-### Step 14 Create the application security group
+![Compare subnets](../../screenshots/lab2/22.png)
+
+### Step 14 — Create the Application Security Group
+
 ```bash
 APP_SG_ID=$(aws ec2 create-security-group \
   --group-name usms-app-sg \
@@ -317,11 +393,14 @@ aws ec2 authorize-security-group-ingress \
   --protocol tcp --port 22 --cidr 10.0.0.0/16 \
   --query 'SecurityGroupRules[0].SecurityGroupRuleId' --output text
 ```
-![23](../../screenshots/lab2/23.png)
 
-### Step 15 Create the database security group, sourced from the application group
+![Create app security group](../../screenshots/lab2/23.png)
+![App SG rule 1](../../screenshots/lab2/52.png)
+![App SG rule 2](../../screenshots/lab2/53.png)
 
-#### Command part 1, create the group
+### Step 15 — Create the Database Security Group, Sourced from the App Group
+
+**Part 1 — Create the group**
 
 ```bash
 DB_SG_ID=$(aws ec2 create-security-group \
@@ -334,15 +413,17 @@ DB_SG_ID=$(aws ec2 create-security-group \
 
 echo "DB_SG_ID = $DB_SG_ID"
 ```
-![24](../../screenshots/lab2/24.png)
 
-#### Command part 2, write the rule as a JSON document
+![Create DB security group](../../screenshots/lab2/24.png)
+
+**Part 2 — Write the rule as a JSON document**
 
 ```bash
 cd policies
 touch usms-db-sg-ingress.json
 ```
-#### Command part 3, apply it
+
+**Part 3 — Apply it**
 
 ```bash
 aws ec2 authorize-security-group-ingress \
@@ -351,9 +432,10 @@ aws ec2 authorize-security-group-ingress \
   --query 'SecurityGroupRules[].SecurityGroupRuleId' \
   --output text
 ```
-![25](../../screenshots/lab2/25.png)
 
-Verify
+![Apply DB SG rule](../../screenshots/lab2/25.png)
+
+Verify:
 
 ```bash
 aws ec2 describe-security-groups \
@@ -361,9 +443,10 @@ aws ec2 describe-security-groups \
   --query 'SecurityGroups[0].IpPermissions[].{Proto:IpProtocol,From:FromPort,To:ToPort,SourceSG:UserIdGroupPairs[0].GroupId,SourceCIDR:IpRanges[0].CidrIp}' \
   --output table
 ```
-![26](../../screenshots/lab2/26.png)
 
-### Step 16 Read the groups back, and understand what stateful means
+![Verify DB SG rule](../../screenshots/lab2/26.png)
+
+### Step 16 — Read the Groups Back and Understand "Stateful"
 
 ```bash
 aws ec2 describe-security-groups \
@@ -371,11 +454,12 @@ aws ec2 describe-security-groups \
   --query 'SecurityGroups[].{Name:GroupName,Id:GroupId,Inbound:length(IpPermissions),Outbound:length(IpPermissionsEgress)}' \
   --output table
 ```
-![27](../../screenshots/lab2/27.png)
 
-### Step 17 Explore the default network ACL, then create a private one
+![Review security groups](../../screenshots/lab2/27.png)
 
-#### Command part 1, read the default NACL
+### Step 17 — Explore the Default Network ACL, Then Create a Private One
+
+**Part 1 — Read the default NACL**
 
 ```bash
 aws ec2 describe-network-acls \
@@ -383,9 +467,10 @@ aws ec2 describe-network-acls \
   --query 'NetworkAcls[0].Entries[].{Rule:RuleNumber,Egress:Egress,Proto:Protocol,Action:RuleAction,CIDR:CidrBlock}' \
   --output table
 ```
-![28](../../screenshots/lab2/28.png)
 
-#### Command part 2, create the private NACL
+![Default NACL](../../screenshots/lab2/28.png)
+
+**Part 2 — Create the private NACL**
 
 ```bash
 PRIVATE_NACL_ID=$(aws ec2 create-network-acl \
@@ -396,9 +481,10 @@ PRIVATE_NACL_ID=$(aws ec2 create-network-acl \
 
 echo "PRIVATE_NACL_ID = $PRIVATE_NACL_ID"
 ```
-![29](../../screenshots/lab2/29.png)
 
-#### Command part 3, write the rules
+![Create private NACL](../../screenshots/lab2/29.png)
+
+**Part 3 — Write the rules**
 
 ```bash
 aws ec2 create-network-acl-entry \
@@ -425,19 +511,22 @@ aws ec2 create-network-acl-entry \
   --egress --cidr-block 0.0.0.0/0 \
   --port-range From=443,To=443
 ```
-![30](../../screenshots/lab2/30.png)
 
-verify
-    
-```bash 
+![NACL rules](../../screenshots/lab2/30.png)
+
+Verify:
+
+```bash
 aws ec2 describe-network-acls \
   --network-acl-ids "$PRIVATE_NACL_ID" \
   --query 'NetworkAcls[0].Entries[].{Rule:RuleNumber,Egress:Egress,Action:RuleAction,CIDR:CidrBlock,Ports:PortRange}' \
   --output json
 ```
-![31](../../screenshots/lab2/31.png)
 
-### Step 18 Associate the private NACL with the private subnet
+![Verify NACL rules](../../screenshots/lab2/31.png)
+
+### Step 18 — Associate the Private NACL with the Private Subnet
+
 ```bash
 NACL_ASSOC_ID=$(aws ec2 describe-network-acls \
   --filters "Name=association.subnet-id,Values=$PRIVATE_SUBNET_A_ID" \
@@ -452,20 +541,24 @@ aws ec2 replace-network-acl-association \
   --query 'NewAssociationId' \
   --output text
 ```
-![32](../../screenshots/lab2/32.png)
 
-verify 
+![Associate NACL](../../screenshots/lab2/32.png)
+
+Verify:
+
 ```bash
 aws ec2 describe-network-acls \
   --filters "Name=association.subnet-id,Values=$PRIVATE_SUBNET_A_ID" \
   --query 'NetworkAcls[0].{Id:NetworkAclId,Default:IsDefault,Name:Tags[?Key==`Name`]|[0].Value}' \
   --output table
 ```
-![33](../../screenshots/lab2/33.png)
 
-### Step 19 Give the private subnet outbound internet access with a NAT gateway
+![Verify NACL association](../../screenshots/lab2/33.png)
 
-#### Command part 1, allocate an Elastic IP
+### Step 19 — Give the Private Subnet Outbound Internet Access with a NAT Gateway
+
+**Part 1 — Allocate an Elastic IP**
+
 ```bash
 NAT_EIP_ALLOC_ID=$(aws ec2 allocate-address \
   --domain vpc \
@@ -480,11 +573,12 @@ aws ec2 describe-addresses \
   --query 'Addresses[0].{Alloc:AllocationId,IP:PublicIp,Domain:Domain}' \
   --output table
 ```
-![34](../../screenshots/lab2/34.png)
 
-#### Command part 2, create the NAT gateway in the public subnet
+![Allocate Elastic IP](../../screenshots/lab2/34.png)
+
+**Part 2 — Create the NAT gateway in the public subnet**
+
 ```bash
-
 NAT_GW_ID=$(aws ec2 create-nat-gateway \
   --subnet-id "$PUBLIC_SUBNET_A_ID" \
   --allocation-id "$NAT_EIP_ALLOC_ID" \
@@ -494,15 +588,19 @@ NAT_GW_ID=$(aws ec2 create-nat-gateway \
 
 echo "NAT_GW_ID = $NAT_GW_ID"
 ```
-![35](../../screenshots/lab2/35.png)
 
-#### Command part 3, wait for it
+![Create NAT gateway](../../screenshots/lab2/35.png)
+
+**Part 3 — Wait for it to become available**
+
 ```bash
 aws ec2 wait nat-gateway-available --nat-gateway-ids "$NAT_GW_ID" && echo "NAT gateway available"
 ```
-![36](../../screenshots/lab2/36.png)
 
-### Step 20 Point the private route table at the NAT gateway
+![NAT gateway available](../../screenshots/lab2/36.png)
+
+### Step 20 — Point the Private Route Table at the NAT Gateway
+
 ```bash
 aws ec2 create-route \
   --route-table-id "$PRIVATE_RT_ID" \
@@ -514,9 +612,11 @@ aws ec2 describe-route-tables \
   --query 'RouteTables[0].Routes[].{Destination:DestinationCidrBlock,Gateway:GatewayId,NAT:NatGatewayId,State:State}' \
   --output table
 ```
-![37](../../screenshots/lab2/37.png)
 
-### Step 21 Create the S3 gateway endpoint
+![Private route table via NAT](../../screenshots/lab2/37.png)
+
+### Step 21 — Create the S3 Gateway Endpoint
+
 ```bash
 S3_ENDPOINT_ID=$(aws ec2 create-vpc-endpoint \
   --vpc-id "$VPC_ID" \
@@ -529,9 +629,10 @@ S3_ENDPOINT_ID=$(aws ec2 create-vpc-endpoint \
 
 echo "S3_ENDPOINT_ID = $S3_ENDPOINT_ID"
 ```
-![38](../../screenshots/lab2/38.png)
 
-verify
+![Create S3 endpoint](../../screenshots/lab2/38.png)
+
+Verify:
 
 ```bash
 aws ec2 describe-vpc-endpoints \
@@ -544,9 +645,11 @@ aws ec2 describe-route-tables \
   --query 'RouteTables[0].Routes[].{Destination:DestinationCidrBlock,PrefixList:DestinationPrefixListId,Target:GatewayId,NAT:NatGatewayId}' \
   --output table
 ```
-![39](../../screenshots/lab2/39.png)
 
-### Step 22 Audit your tags
+![Verify S3 endpoint](../../screenshots/lab2/39.png)
+
+### Step 22 — Audit Tags
+
 ```bash
 echo "== Resources tagged Project=USMS in this VPC =="
 aws ec2 describe-tags \
@@ -554,10 +657,13 @@ aws ec2 describe-tags \
   --query 'sort_by(Tags[?Key==`Name`], &Value)[].{Type:ResourceType,Name:Value,Id:ResourceId}' \
   --output table
 ```
-![40](../../screenshots/lab2/40.png)
 
-### Step 23 Prove the network survives a restart
-#### Command part 1, record the truth before the restart
+![Audit tags](../../screenshots/lab2/40.png)
+
+### Step 23 — Prove the Network Survives a Restart
+
+**Part 1 — Record the state before the restart**
+
 ```bash
 aws ec2 describe-vpcs --vpc-ids "$VPC_ID" \
   --query 'Vpcs[0].VpcId' --output text > outputs/lab-02-pre-restart.txt
@@ -570,9 +676,10 @@ aws ec2 describe-security-groups --filters "Name=vpc-id,Values=$VPC_ID" \
 
 cat outputs/lab-02-pre-restart.txt
 ```
-![41](../../screenshots/lab2/41.png)
 
-#### Command part 2, perturb
+![Pre-restart state](../../screenshots/lab2/41.png)
+
+**Part 2 — Restart the environment**
 
 ```bash
 ./scripts/setup/floci-down.sh
@@ -580,9 +687,10 @@ sleep 3
 ./scripts/setup/floci-up.sh
 sleep 5
 ```
-![42](../../screenshots/lab2/42.png)
 
-#### Command part 3, read it back
+![Restart environment](../../screenshots/lab2/42.png)
+
+**Part 3 — Read the state back and compare**
 
 ```bash
 source configs/course.env
@@ -603,35 +711,49 @@ diff outputs/lab-02-pre-restart.txt outputs/lab-02-post-restart.txt \
   && echo "PERSISTENCE PROVEN: VPC id, subnet count and security group count all unchanged" \
   || echo "PERSISTENCE FAILED: run ./scripts/utilities/floci-storage-check.sh"
 ```
-![44](../../screenshots/lab2/44.png)
 
-### Step 24 Write configs/lab-02.env
+![Persistence proven](../../screenshots/lab2/44.png)
 
-```bash 
+### Step 24 — Write `configs/lab-02.env`
+
+```bash
 cd configs
 touch lab-02.env
 ```
+
 ```bash
 grep -n 'export .*=$\|None' configs/lab-02.env || echo "all values populated"
 ```
-![45](../../screenshots/lab2/45.png)
 
-Finally, confirm the file loads cleanly:
+![Write env file](../../screenshots/lab2/45.png)
+
+Confirm the file loads cleanly:
 
 ```bash
 source configs/lab-02.env
 echo "vpc=$USMS_VPC_ID  public-a=$USMS_PUBLIC_SUBNET_A  app-sg=$USMS_APP_SG"
 ```
-![46](../../screenshots/lab2/46.png)
 
-### Step 25 Commit your work
+![Confirm env file loads](../../screenshots/lab2/46.png)
 
-#### Command part 1, look before you add
+### Step 25 — Commit the Work
+
+**Part 1 — Look before you add**
+
 ```bash
 git add .
 git commit -m "wip: report"
 git push
 ```
-![47](../../screenshots/lab2/47.png)
 
+![Commit work](../../screenshots/lab2/47.png)
 
+## Reflection
+
+Through this lab on Amazon Virtual Private Cloud (VPC), I gained hands-on experience architecting an isolated, secure network infrastructure on AWS. This included CIDR IP address planning, public and private subnet division, Internet Gateways (IGW), NAT Gateways, route tables, S3 Gateway Endpoints, Security Groups, and Network Access Control Lists (NACLs).
+
+The primary challenge I encountered was correctly configuring routing and multi-layered security controls — specifically, differentiating between stateful Security Groups (which automatically allow return traffic) and stateless NACLs (which require explicit inbound and outbound rule pairing) — to avoid unintended access blocks.
+
+In a real-world cloud environment, I would apply this VPC architecture to isolate production databases in private subnets while exposing front-end web applications or load balancers in public subnets, with secure NAT-mediated outbound access for updates and S3 VPC Endpoints for private asset storage.
+
+To further deepen my cloud expertise, I would like to explore multi-availability-zone high-availability designs, VPC Peering, AWS Transit Gateway, and VPC Flow Logs for network traffic auditing and threat detection.
