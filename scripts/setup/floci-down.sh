@@ -12,6 +12,3 @@ source "$REPO_ROOT/configs/course.env"
 
 docker compose stop
 printf '\033[1;34m==>\033[0m Floci stopped. State preserved in %s\n' "$FLOCI_HOST_DATA_DIR"
-EOF
-
-chmod +x scripts/setup/floci-down.sh
