@@ -1,0 +1,18 @@
+{
+  "handoff_from": "lab-03-ec2",
+  "handoff_to": "lab-04",
+  "bucket": "usms-student-data",
+  "region": "us-east-1",
+  "instance_profile": "usms-instance-profile",
+  "required_policy": "USMSStudentDataReadWrite",
+  "key_structure": "transcripts/{student_id}/{yyyy}/{term}.json",
+  "expected_objects": [
+    "transcripts/S0001/2025/spring.json"
+  ],
+  "sample_object": {
+    "student_id": "S0001",
+    "term": "spring-2025",
+    "courses": [{"code": "DSO303", "grade": "A"}],
+    "generated_by": "usms-web-01"
+  }
+}
