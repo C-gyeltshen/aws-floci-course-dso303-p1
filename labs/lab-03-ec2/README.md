@@ -1,6 +1,25 @@
-# Lab3
+# Lab 03 — EC2: Web and Data Tier Instances
 
-## Step 1: Resume the environment and load three env files
+Launch the USMS web server and database-tier instances into the Lab 02 network, attach storage and a stable public address, prove persistence across restarts, and capture a golden AMI.
+
+## Contents
+
+- [Part A — Environment Setup](#part-a--environment-setup)
+- [Part B — Prepare the Launch](#part-b--prepare-the-launch)
+- [Part C — Launch and Inspect the Web Server](#part-c--launch-and-inspect-the-web-server)
+- [Part D — Networking and Storage](#part-d--networking-and-storage)
+- [Part E — Database Tier](#part-e--database-tier)
+- [Part F — Resilience](#part-f--resilience)
+- [Part G — Golden AMI and Wrap-up](#part-g--golden-ami-and-wrap-up)
+- [Verification](#verification)
+
+---
+
+## Part A — Environment Setup
+
+### Step 1 — Resume the environment and load the env files
+
+Start Floci, load the course, Lab 01 and Lab 02 configuration, and confirm the values this lab depends on.
 
 ```bash
 ./scripts/setup/floci-up.sh
@@ -12,33 +31,42 @@ source configs/lab-02.env
 ./scripts/utilities/whoami.sh
 
 printf '%-24s %s\n' \
-  "public subnet a"  "$USMS_PUBLIC_SUBNET_A" \
-  "private subnet a" "$USMS_PRIVATE_SUBNET_A" \
-  "app security group" "$USMS_APP_SG" \
-  "db security group"  "$USMS_DB_SG" \
-  "instance profile"   "$USMS_INSTANCE_PROFILE" \
+  "public subnet a"     "$USMS_PUBLIC_SUBNET_A" \
+  "private subnet a"    "$USMS_PRIVATE_SUBNET_A" \
+  "app security group"  "$USMS_APP_SG" \
+  "db security group"   "$USMS_DB_SG" \
+  "instance profile"    "$USMS_INSTANCE_PROFILE" \
   "availability zone a" "$USMS_AZ_A"
 ```
-![1](../../screenshots/lab3/1.png)
 
-## Step 2 - Confirm Lab 02's network is intact
+![Environment loaded](../../screenshots/lab3/1.png)
 
-![2](../../screenshots/lab3/2.png)
+### Step 2 — Confirm Lab 02's network is intact
 
-Step 3 - Choose an AMI
+Verify the VPC, subnets and security groups from Lab 02 still exist before building on them.
 
-Command - part 1, see what this build offers
-```bash 
+![Lab 02 network intact](../../screenshots/lab3/2.png)
+
+---
+
+## Part B — Prepare the Launch
+
+### Step 3 — Choose an AMI
+
+**Part 1 — List the images available in this build**
+
+```bash
 aws ec2 describe-images \
   --owners amazon \
   --query 'Images[].{Id:ImageId,Name:Name,Arch:Architecture,Root:RootDeviceType}' \
   --output table
 ```
-![3](../../screenshots/lab3/3.png)
 
-Command - part 2, capture one
+![Available AMIs](../../screenshots/lab3/3.png)
 
-```bash 
+**Part 2 — Capture one**
+
+```bash
 AMI_ID=$(aws ec2 describe-images \
   --owners amazon \
   --query 'Images[0].ImageId' \
@@ -46,9 +74,10 @@ AMI_ID=$(aws ec2 describe-images \
 
 echo "AMI_ID = $AMI_ID"
 ```
-![4](../../screenshots/lab3/4.png)
 
-Step 4 - Create the key pair and store the private key safely¶
+![AMI captured](../../screenshots/lab3/4.png)
+
+### Step 4 — Create the key pair and store the private key safely
 
 ```bash
 aws ec2 create-key-pair \
@@ -63,36 +92,41 @@ chmod 600 outputs/usms-app-key.pem
 ls -l outputs/usms-app-key.pem
 head -1 outputs/usms-app-key.pem
 ```
-![5](../../screenshots/lab3/5.png)
 
-verify 
-```bash 
+![Key pair created](../../screenshots/lab3/5.png)
+
+**Verify**
+
+```bash
 aws ec2 describe-key-pairs \
   --key-names usms-app-key \
   --query 'KeyPairs[0].{Name:KeyName,Fingerprint:KeyFingerprint,Type:KeyType}' \
   --output table
 ```
-![6](../../screenshots/lab3/6.png)
 
-Step 5 - Prove the private key is git-ignored
+![Key pair verified](../../screenshots/lab3/6.png)
+
+### Step 5 — Prove the private key is git-ignored
 
 ```bash
 git status --short
-
 git check-ignore -v outputs/usms-app-key.pem
-
 git ls-files outputs/
 ```
-![7](../../screenshots/lab3/7.png)
 
+![Key is git-ignored](../../screenshots/lab3/7.png)
 
-Step 6 - Write the user-data bootstrap script
+### Step 6 — Write the user-data bootstrap script
 
-![8](../../screenshots/lab3/8.png)
+Create `labs/lab-03-ec2/user-data.sh`, which installs nginx and deploys the portal page on first boot.
 
-Step 7 - Generate a request skeleton and fill it in
+![User-data script](../../screenshots/lab3/8.png)
 
-```bash 
+### Step 7 — Generate a request skeleton and fill it in
+
+**Part 1 — Generate the full skeleton**
+
+```bash
 mkdir -p templates
 
 aws ec2 run-instances --generate-cli-skeleton \
@@ -101,20 +135,29 @@ aws ec2 run-instances --generate-cli-skeleton \
 wc -l templates/lab-03-run-instances-full.json
 head -25 templates/lab-03-run-instances-full.json
 ```
-![9](../../screenshots/lab3/9.png)
 
-Command - part 2, write the request we actually want
+![Request skeleton](../../screenshots/lab3/9.png)
 
-```bash 
+**Part 2 — Write the request we actually want and validate it**
+
+Trim the skeleton down to `templates/lab-03-run-instances.json`, then check it is valid JSON.
+
+```bash
 python3 -m json.tool templates/lab-03-run-instances.json > /dev/null \
   && echo "valid JSON" || echo "INVALID JSON - fix it before Step 8"
 ```
-![10](../../screenshots/lab3/10.png)
 
+![JSON validated](../../screenshots/lab3/10.png)
 
-Step 8 - Launch the USMS web server
+---
 
-```bash 
+## Part C — Launch and Inspect the Web Server
+
+### Step 8 — Launch the USMS web server
+
+Render the template with the current variables and launch the instance with the user-data script.
+
+```bash
 export AMI_ID USMS_PUBLIC_SUBNET_A USMS_APP_SG USMS_INSTANCE_PROFILE
 envsubst < templates/lab-03-run-instances.json > /tmp/lab-03-run-instances.rendered.json
 
@@ -126,18 +169,19 @@ WEB_INSTANCE_ID=$(aws ec2 run-instances \
 
 echo "WEB_INSTANCE_ID = $WEB_INSTANCE_ID"
 ```
-![12](../../screenshots/lab3/12.png)
 
-Step 9 - Wait for the instance to reach running
+![Web server launched](../../screenshots/lab3/12.png)
 
-```bash 
+### Step 9 — Wait for the instance to reach `running`
+
+```bash
 time aws ec2 wait instance-running --instance-ids "$WEB_INSTANCE_ID"
 echo "exit code: $?"
 ```
-![13](../../screenshots/lab3/13.png)
 
+![Instance running](../../screenshots/lab3/13.png)
 
-Step 10 - Read the instance back and understand the fields
+### Step 10 — Read the instance back and understand the fields
 
 ```bash
 aws ec2 describe-instances \
@@ -156,11 +200,14 @@ aws ec2 describe-instances \
     }' \
   --output table
 ```
-![14](../../screenshots/lab3/14.png)
 
-Step 11 - Trace the permission chain from the instance to the policy
+![Instance details](../../screenshots/lab3/14.png)
 
-```bash 
+### Step 11 — Trace the permission chain from instance to policy
+
+Follow the chain **instance → instance profile → role → attached policy → policy document**.
+
+```bash
 PROFILE_ARN=$(aws ec2 describe-instances --instance-ids "$WEB_INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' --output text)
 echo "1. instance -> profile : $PROFILE_ARN"
@@ -184,9 +231,12 @@ echo "4. role -> policy document:"
 aws iam get-policy-version --policy-arn "$POLICY_ARN" --version-id "$DEFAULT_VERSION" \
   --query 'PolicyVersion.Document' --output json | tee outputs/lab-03-instance-policy.json
 ```
-![15](../../screenshots/lab3/15.png)
 
-Step 12 - Prove the user data actually arrived
+![Permission chain](../../screenshots/lab3/15.png)
+
+### Step 12 — Prove the user data actually arrived
+
+Download the stored user data, decode it, and diff it against the original script.
 
 ```bash
 aws ec2 describe-instance-attribute \
@@ -204,9 +254,16 @@ diff labs/lab-03-ec2/user-data.sh outputs/lab-03-userdata.sh \
   && echo "USER DATA PROVEN: what EC2 stored is byte-identical to what you wrote" \
   || echo "MISMATCH - see the diff above"
 ```
-![16](../../screenshots/lab3/16.png)
 
-Step 13 - Give the web server a stable public address
+![User data proven](../../screenshots/lab3/16.png)
+
+---
+
+## Part D — Networking and Storage
+
+### Step 13 — Give the web server a stable public address
+
+Allocate an Elastic IP and associate it with the web server.
 
 ```bash
 AUTO_PUBLIC_IP=$(aws ec2 describe-instances --instance-ids "$WEB_INSTANCE_ID" \
@@ -229,25 +286,31 @@ WEB_PUBLIC_IP=$(aws ec2 describe-addresses \
 
 printf 'alloc=%s assoc=%s address=%s\n' "$WEB_EIP_ALLOC" "$WEB_EIP_ASSOC" "$WEB_PUBLIC_IP"
 ```
-![17](../../screenshots/lab3/17.png)
 
-verify 
+![Elastic IP associated](../../screenshots/lab3/17.png)
+
+**Verify**
+
 ```bash
 aws ec2 describe-instances --instance-ids "$WEB_INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].{Public:PublicIpAddress,Private:PrivateIpAddress}' \
   --output table
 ```
-![18](../../screenshots/lab3/18.png)
 
-Step 14 - Test the application¶
+![EIP verified](../../screenshots/lab3/18.png)
 
-```bash 
+### Step 14 — Test the application
+
+```bash
 curl -sS --max-time 5 "http://${WEB_PUBLIC_IP}/" && echo || echo "no response (expected on Floci)"
 curl -sS --max-time 5 "http://${WEB_PUBLIC_IP}/health.json" && echo || echo "no response (expected on Floci)"
 ```
-![19](../../screenshots/lab3/19.png)
 
-Command - fallback, prove every link in the chain
+![Application test](../../screenshots/lab3/19.png)
+
+**Fallback — prove every link in the chain**
+
+Since Floci does not serve real traffic, verify each condition that would let the request reach the instance.
 
 ```bash
 echo "== 1. Is the instance running? =="
@@ -280,9 +343,12 @@ aws ec2 describe-network-acls \
   --filters "Name=association.subnet-id,Values=$SUBNET" \
   --query 'NetworkAcls[0].{Acl:NetworkAclId,Default:IsDefault}' --output text
 ```
-![20](../../screenshots/lab3/20.png)
 
-Step 15 - Create and attach a data volume
+![Reachability chain](../../screenshots/lab3/20.png)
+
+### Step 15 — Create and attach a data volume
+
+The volume must be created in the same Availability Zone as the instance.
 
 ```bash
 INSTANCE_AZ=$(aws ec2 describe-instances --instance-ids "$WEB_INSTANCE_ID" \
@@ -307,18 +373,25 @@ aws ec2 attach-volume \
   --query '{Volume:VolumeId,Device:Device,State:State}' \
   --output table
 ```
-![21](../../screenshots/lab3/21.png)
 
-verify 
+![Volume attached](../../screenshots/lab3/21.png)
+
+**Verify**
+
 ```bash
 aws ec2 describe-volumes \
   --filters "Name=attachment.instance-id,Values=$WEB_INSTANCE_ID" \
   --query 'Volumes[].{Id:VolumeId,Size:Size,Type:VolumeType,AZ:AvailabilityZone,Device:Attachments[0].Device,State:Attachments[0].State,DeleteOnTerm:Attachments[0].DeleteOnTermination}' \
   --output table
 ```
-![22](../../screenshots/lab3/22.png)
 
-Step 16 - Launch the database-tier instance into the private subnet
+![Volumes verified](../../screenshots/lab3/22.png)
+
+---
+
+## Part E — Database Tier
+
+### Step 16 — Launch the database-tier instance into the private subnet
 
 ```bash
 DB_INSTANCE_ID=$(aws ec2 run-instances \
@@ -338,11 +411,12 @@ aws ec2 describe-instances --instance-ids "$DB_INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].{Id:InstanceId,State:State.Name,Subnet:SubnetId,Private:PrivateIpAddress,Public:PublicIpAddress,SG:SecurityGroups[0].GroupName,Profile:IamInstanceProfile}' \
   --output table
 ```
-![23](../../screenshots/lab3/23.png)
 
-Step 17 - Prove the two tiers are wired the way you think
+![DB instance launched](../../screenshots/lab3/23.png)
 
-```bash 
+### Step 17 — Prove the two tiers are wired the way you think
+
+```bash
 echo "== Which security group does each instance carry? =="
 aws ec2 describe-instances \
   --filters "Name=tag:Project,Values=USMS" "Name=instance-state-name,Values=running" \
@@ -375,9 +449,14 @@ aws ec2 describe-route-tables \
   --query 'RouteTables[0].Routes[].{Dest:DestinationCidrBlock,Gateway:GatewayId,NAT:NatGatewayId}' \
   --output table
 ```
-![24](../../screenshots/lab3/24.png)
 
-Step 18 - Stop and start the web server, and watch which address moves
+![Tier wiring proven](../../screenshots/lab3/24.png)
+
+---
+
+## Part F — Resilience
+
+### Step 18 — Stop and start the web server, and watch which address moves
 
 ```bash
 echo "before: web=$(aws ec2 describe-instances --instance-ids "$WEB_INSTANCE_ID" \
@@ -406,10 +485,13 @@ aws ec2 describe-addresses --allocation-ids "$WEB_EIP_ALLOC" \
   --query 'Addresses[0].{Address:PublicIp,Instance:InstanceId,Assoc:AssociationId}' \
   --output table
 ```
-![25](../../screenshots/lab3/25.png)
 
-Step 19 - Prove the compute layer survives a restar
-Command - part 1, record the truth
+![Stop/start address behaviour](../../screenshots/lab3/25.png)
+
+### Step 19 — Prove the compute layer survives a restart
+
+**Part 1 — Record the current state**
+
 ```bash
 aws ec2 describe-instances \
   --filters "Name=tag:Project,Values=USMS" "Name=instance-state-name,Values=running" \
@@ -418,9 +500,11 @@ aws ec2 describe-instances \
 
 cat outputs/lab-03-pre-restart.txt
 ```
-![26](../../screenshots/lab3/26.png)
 
-Command - part 2, perturb
+![Pre-restart state](../../screenshots/lab3/26.png)
+
+**Part 2 — Restart Floci**
+
 ```bash
 ./scripts/setup/floci-down.sh
 sleep 3
@@ -428,11 +512,12 @@ sleep 3
 sleep 5
 source configs/course.env
 ```
-![27](../../screenshots/lab3/27.png)
 
-Command - part 3, read it back by tag, not by variable
+![Floci restarted](../../screenshots/lab3/27.png)
 
-```bash 
+**Part 3 — Read the state back by tag (not by variable) and compare**
+
+```bash
 aws ec2 describe-instances \
   --filters "Name=tag:Project,Values=USMS" "Name=instance-state-name,Values=running" \
   --query 'sort_by(Reservations[].Instances[], &InstanceId)[].[InstanceId,SubnetId,SecurityGroups[0].GroupId]' \
@@ -447,10 +532,16 @@ aws ec2 describe-volumes --filters "Name=tag:Project,Values=USMS" \
 aws ec2 describe-addresses --filters "Name=tag:Project,Values=USMS" \
   --query 'length(Addresses)' --output text
 ```
-![28](../../screenshots/lab3/28.png)
 
-Step 20 - Create an AMI from the configured instance
-```bash 
+![Persistence proven](../../screenshots/lab3/28.png)
+
+---
+
+## Part G — Golden AMI and Wrap-up
+
+### Step 20 — Create an AMI from the configured instance
+
+```bash
 WEB_AMI_ID=$(aws ec2 create-image \
   --instance-id "$WEB_INSTANCE_ID" \
   --name "usms-web-golden-$(date -u +%Y%m%d)" \
@@ -467,10 +558,12 @@ aws ec2 describe-images --image-ids "$WEB_AMI_ID" \
   --query 'Images[0].{Id:ImageId,Name:Name,State:State,Public:Public,Root:RootDeviceName}' \
   --output table
 ```
-![29](../../screenshots/lab3/29.png)
 
-Step 21 - Audit what this lab created
-```bash 
+![Golden AMI created](../../screenshots/lab3/29.png)
+
+### Step 21 — Audit what this lab created
+
+```bash
 echo "== Instances =="
 aws ec2 describe-instances \
   --filters "Name=tag:Project,Values=USMS" \
@@ -491,28 +584,35 @@ echo "== Images =="
 aws ec2 describe-images --owners self \
   --query 'Images[].{Name:Name,Id:ImageId,State:State}' --output table
 ```
-![30](../../screenshots/lab3/30.png)
 
-Step 22 - Write configs/lab-03.env
+![Resource audit](../../screenshots/lab3/30.png)
 
-```bash 
+### Step 22 — Write `configs/lab-03.env`
+
+Check that no exported value is empty or `None`:
+
+```bash
 grep -n 'export .*=$\|None' configs/lab-03.env || echo "all values populated"
 ```
-![31](../../screenshots/lab3/31.png)
 
-verify 
+![Env file check](../../screenshots/lab3/31.png)
+
+**Verify**
+
 ```bash
 source configs/lab-03.env
 printf '%-24s %s\n' \
-  "web instance" "$USMS_WEB_INSTANCE" \
-  "db instance"  "$USMS_DB_INSTANCE" \
+  "web instance"  "$USMS_WEB_INSTANCE" \
+  "db instance"   "$USMS_DB_INSTANCE" \
   "web public IP" "$USMS_WEB_PUBLIC_IP" \
-  "golden AMI"   "$USMS_WEB_AMI"
+  "golden AMI"    "$USMS_WEB_AMI"
 ```
-![32](../../screenshots/lab3/32.png)
 
-Step 23 - Commit
-```bash 
+![Env file verified](../../screenshots/lab3/32.png)
+
+### Step 23 — Commit
+
+```bash
 git status --short
 
 git check-ignore -v outputs/usms-app-key.pem
@@ -527,21 +627,41 @@ git commit -m "Lab 03: USMS web and data tier instances, EIP, EBS volume, golden
 git log --oneline -4
 ```
 
-![33](../../screenshots/lab3/33.png)
+![Commit](../../screenshots/lab3/33.png)
 
-9. Verification
-9.2 Build scripts/utilities/verify-lab-03.sh
-```bash 
+---
+
+## Verification
+
+### Verification script — `scripts/utilities/verify-lab-03.sh`
+
+```bash
 chmod +x scripts/utilities/verify-lab-03.sh
 ./scripts/utilities/verify-lab-03.sh
 ```
-![34](../../screenshots/lab3/34.png)
 
-9.3 Build the end-of-course cleanup script
+![Verification script output](../../screenshots/lab3/34.png)
+
+### End-of-course cleanup script — `scripts/cleanup/lab-03-cleanup.sh`
+
+Syntax-check only. **Do not run it** until the end of the course.
+
 ```bash
 chmod +x scripts/cleanup/lab-03-cleanup.sh
 bash -n scripts/cleanup/lab-03-cleanup.sh && echo "syntax OK - do NOT run it"
 ```
-![35](../../screenshots/lab3/35.png)
 
+![Cleanup script syntax check](../../screenshots/lab3/35.png)
 
+---
+
+## Resources Created
+
+| Resource | Name | Notes |
+|---|---|---|
+| Key pair | `usms-app-key` | Private key in `outputs/`, git-ignored |
+| EC2 instance | `usms-web-01` | Public subnet A, `usms-app-sg`, instance profile attached |
+| EC2 instance | `usms-db-01` | Private subnet A, `usms-db-sg`, no public IP |
+| Elastic IP | `usms-web-eip` | Associated with the web server |
+| EBS volume | `usms-web-data-vol` | 8 GiB gp3, attached at `/dev/sdf` |
+| AMI | `usms-web-golden-YYYYMMDD` | Golden image of the configured web server |
