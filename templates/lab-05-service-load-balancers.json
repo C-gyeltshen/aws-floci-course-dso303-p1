@@ -1,0 +1,7 @@
+[
+  {
+    "targetGroupArn": "$TG_ARN",
+    "containerName": "$USMS_ENROLMENT_CONTAINER",
+    "containerPort": 80
+  }
+]

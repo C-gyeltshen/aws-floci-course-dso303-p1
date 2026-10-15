@@ -1,0 +1,6 @@
+[
+  {
+    "Type": "forward",
+    "TargetGroupArn": "$TG_ARN"
+  }
+]
