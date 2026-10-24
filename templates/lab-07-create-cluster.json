@@ -1,0 +1,24 @@
+{
+  "name": "usms-eks-cluster",
+  "version": "1.30",
+  "roleArn": "$(aws iam get-role --role-name usms-eks-cluster-role --query 'Role.Arn' --output text)",
+  "resourcesVpcConfig": {
+    "subnetIds": [
+      "$USMS_PRIVATE_SUBNET_A",
+      "$USMS_PRIVATE_SUBNET_B",
+      "$USMS_PUBLIC_SUBNET_A",
+      "$USMS_PUBLIC_SUBNET_B"
+    ],
+    "securityGroupIds": [ "$EKS_CLUSTER_SG" ],
+    "endpointPublicAccess": true,
+    "endpointPrivateAccess": true
+  },
+  "tags": {
+    "Name": "usms-eks-cluster",
+    "Project": "USMS",
+    "Tier": "app",
+    "Lab": "07",
+    "_lb_ports_": "8081,8082"
+  }
+}
+

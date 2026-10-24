@@ -1,0 +1,11 @@
+{
+  "clusterName": "usms-eks-cluster",
+  "nodegroupName": "usms-eks-nodes",
+  "scalingConfig": { "minSize": 2, "maxSize": 4, "desiredSize": 2 },
+  "subnets": [ "$USMS_PRIVATE_SUBNET_A", "$USMS_PRIVATE_SUBNET_B" ],
+  "instanceTypes": [ "t3.small" ],
+  "amiType": "AL2023_x86_64_STANDARD",
+  "nodeRole": "$(aws iam get-role --role-name usms-eks-node-role --query 'Role.Arn' --output text)",
+  "labels": { "workload": "usms", "tier": "app" },
+  "tags": { "Name": "usms-eks-nodes", "Project": "USMS", "Tier": "app", "Lab": "07" }
+}
