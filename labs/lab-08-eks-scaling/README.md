@@ -606,8 +606,21 @@ git add configs/lab-08.env
 git commit -m "lab-08-eks-scaling: HPA, PDB, NodePort, Ingress, and nodeSelector"
 git log --oneline -n 1
 ```
+![59](../../screenshots/lab8/59.png)
+
+![60](../../screenshots/lab8/60.png)
 
 
 
+verify
 
+```bash
+chmod +x scripts/utilities/verify-lab-08.sh
+./scripts/utilities/verify-lab-08.sh
+```
+![61](../../screenshots/lab8/61.png)
+
+
+8.2 Build the cleanup script - DO NOT RUN IT NOW¶
+![62](../../screenshots/lab8/62.png)
 
