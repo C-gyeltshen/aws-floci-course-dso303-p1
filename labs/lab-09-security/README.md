@@ -883,3 +883,14 @@ grep -c '^export' configs/lab-09.env
 
 Step 20 - Commit¶
 
+![59](../../screenshots/lab9/59.png)
+
+8. Verification¶
+8.1 Build scripts/utilities/verify-lab-09.sh
+![60](../../screenshots/lab9/60.png)
+
+8.2 Build the end-of-course cleanup script¶
+![61](../../screenshots/lab9/61.png)
+
+
+
