@@ -1,0 +1,13 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyTheAdminUserMayDeploy",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::${USMS_ACCOUNT_ID}:user/${USMS_ADMIN_USER}"
+      },
+      "Action": "sts:AssumeRole"
+    }
+  ]
+}
