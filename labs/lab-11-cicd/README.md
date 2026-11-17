@@ -1,34 +1,115 @@
-# Building a CI/CD Pipeline with AWS CodePipeline and CodeBuild
+# Lab 11: Building a CI/CD Pipeline with AWS CodePipeline and CodeBuild
+
+> **Project:** USMS (University Student Management System) · **Emulator:** Floci · **Account:** `000000000000` · **Region:** `us-east-1`
+
+This lab builds a two-stage delivery pipeline for the USMS enrolment service. An **S3 source stage** passes a versioned source archive to a **CodeBuild stage**. The build validates, tests and packages the service. You run the build on its own first, then hand it to CodePipeline, run it end to end, break it on purpose and fix it.
+
+---
+
+## Table of Contents
+
+1. [Architecture](#architecture)
+2. [Learning Objectives](#learning-objectives)
+3. [Prerequisites](#prerequisites)
+4. [Resources Created](#resources-created)
+5. [Part A: Environment Setup](#part-a-environment-setup) (Steps 1–4)
+6. [Part B: Artifact Store](#part-b-artifact-store) (Steps 5–6)
+7. [Part C: Application Source](#part-c-application-source) (Steps 7–8)
+8. [Part D: CodeBuild](#part-d-codebuild) (Steps 9–14)
+9. [Part E: CodePipeline](#part-e-codepipeline) (Steps 15–19)
+10. [Part F: Failure and Recovery](#part-f-failure-and-recovery) (Step 20)
+11. [Part G: Record and Commit](#part-g-record-and-commit) (Step 21)
+12. [Verification](#verification)
+13. [Cleanup](#cleanup)
+14. [Troubleshooting](#troubleshooting)
+
+---
+
+## Architecture
+
+```
+ labs/lab-11-cicd/app ──pack──▶ s3://usms-pipeline-artifacts/source/usms-enrolment-src.zip
+                                              │  (versioned object)
+                                              ▼
+                ┌──────────────────── usms-enrolment-pipeline ────────────────────┐
+                │                                                                 │
+                │   Stage 1: Source (S3)  ──SourceOutput──▶  Stage 2: Build       │
+                │                                            usms-enrolment-build │
+                │                                            install → pre_build  │
+                │                                            → build → post_build │
+                └─────────────────────────────────────────────────┬───────────────┘
+                                                                  ▼
+                          s3://usms-pipeline-artifacts/usms-enrolment-pipeline/BuildOutput/<id>.zip
+```
+
+Stages do not stream data to each other. Each stage writes a zip file to the artifact bucket, and the next stage reads it from there.
+
+---
+
+## Learning Objectives
+
+By the end of this lab you will be able to:
+
+- Create a versioned, private S3 artifact store and show that versioning works
+- Write a `buildspec.yml` with all four build phases and a smoke test
+- Create least-privilege IAM service roles for CodeBuild and CodePipeline
+- Run and debug a CodeBuild project on its own, using phase timings and CloudWatch logs
+- Define, create and run a CodePipeline, and confirm which source version it consumed
+- Diagnose a deliberately broken build from the pipeline state, then recover
+
+---
 
 ## Prerequisites
+
+Labs 04, 05 and 10 must pass verification, and Floci must be in a persistent storage mode.
 
 ```bash
 source configs/course.env
 
-./scripts/utilities/floci-storage-check.sh      
-./scripts/utilities/verify-lab-04.sh           
-./scripts/utilities/verify-lab-05.sh         
-./scripts/utilities/verify-lab-10.sh      
+./scripts/utilities/floci-storage-check.sh
+./scripts/utilities/verify-lab-04.sh
+./scripts/utilities/verify-lab-05.sh
+./scripts/utilities/verify-lab-10.sh
 ```
 
+---
 
-## Step-by-Step Implementation
+## Resources Created
 
-Step 1 - Start Floci and confirm where you are¶
-If the emulator is not in hybrid storage mode, tonight's pipeline is gone tomorrow while every command still reports success.
+| Type | Name |
+|---|---|
+| S3 bucket | `usms-pipeline-artifacts` (versioned, public access blocked) |
+| IAM role | `usms-codebuild-role` |
+| IAM policy | `USMSCodeBuildBase` |
+| IAM role | `usms-codepipeline-role` |
+| IAM policy | `USMSCodePipelineBase` |
+| CodeBuild project | `usms-enrolment-build` |
+| CodePipeline | `usms-enrolment-pipeline` |
+| Log group | `/aws/codebuild/usms-enrolment-build` |
 
-```bash 
+All resources are tagged `Project=USMS`, `Tier=pipeline`, `Lab=11`.
+
+---
+
+## Part A: Environment Setup
+
+### Step 1: Start Floci and confirm where you are
+
+> [!WARNING]
+> If the emulator is not in hybrid storage mode, tonight's pipeline is gone tomorrow, while every command still reports success.
+
+```bash
 cd ~/aws-floci-course
 ./scripts/setup/floci-up.sh
 ./scripts/utilities/floci-storage-check.sh
 ./scripts/utilities/whoami.sh
 ```
-![1](../../screenshots/lab11/1.png)
 
+![Step 1: Floci running in hybrid storage mode](../../screenshots/lab11/1.png)
 
+### Step 2: Source every earlier lab's environment
 
-Step 2 - Source every earlier lab's environment¶
-Read back the names earlier labs recorded.
+Read back the resource names that earlier labs recorded.
 
 ```bash
 source configs/course.env
@@ -47,13 +128,12 @@ done
 
 ./scripts/utilities/whoami.sh
 ```
-![2](../../screenshots/lab11/2.png)
 
+![Step 2: Earlier lab environments sourced](../../screenshots/lab11/2.png)
 
+**Verify:** none of these values should print `MISSING`.
 
-Verify
-
-```bash 
+```bash
 printf 'cluster   : %s\nservice   : %s\ncontainer : %s\ntarget grp: %s\nexec role : %s\n' \
   "${USMS_ECS_CLUSTER:-MISSING}" \
   "${USMS_ENROLMENT_SERVICE:-MISSING}" \
@@ -61,19 +141,23 @@ printf 'cluster   : %s\nservice   : %s\ncontainer : %s\ntarget grp: %s\nexec rol
   "${USMS_TG_ARN:-MISSING}" \
   "${USMS_ECS_EXEC_ROLE_ARN:-MISSING}"
 ```
-![3](../../screenshots/lab11/3.png)
 
+![Step 2 verify: ECS values populated](../../screenshots/lab11/3.png)
 
-Step 3 - Probe CI/CD support and choose your path
+### Step 3: Probe CI/CD support and choose your path
 
-```bash 
+The probe reports which of Path A, B or C your emulator supports. Write the result down, because it decides which verification failures are expected later.
+
+```bash
 chmod +x scripts/utilities/cicd-support-probe.sh
 bash -n scripts/utilities/cicd-support-probe.sh && echo "syntax OK"
 ./scripts/utilities/cicd-support-probe.sh
 ```
-![4](../../screenshots/lab11/4.png)
 
-Step 4 - Create this lab's directories¶
+![Step 3: CI/CD support probe result](../../screenshots/lab11/4.png)
+
+### Step 4: Create this lab's directories
+
 Create every directory this lab writes to, so no later step fails on a missing parent.
 
 ```bash
@@ -84,11 +168,20 @@ mkdir -p labs/lab-11-cicd/app/src \
 
 ls -d labs/lab-11-cicd/app/*
 ```
-![5](../../screenshots/lab11/5.png)
 
+![Step 4: Lab directories created](../../screenshots/lab11/5.png)
 
-Step 5 - Create the pipeline artifact bucket¶
-Every stage hands the next a zip file in one S3 bucket, the artifact store; this bucket also holds the source archive. Nothing streams between stages, so the bucket must be in the pipeline's Region, its policy must be scoped (artifacts contain configuration), and an unfamiliar key in an error is an artifact key (<pipeline-name>/<OutputArtifactName>/<random>.zip). See AWS CodePipeline.
+---
+
+## Part B: Artifact Store
+
+### Step 5: Create the pipeline artifact bucket
+
+Every stage hands the next one a zip file through a single S3 bucket, the **artifact store**. The same bucket also holds the source archive. Because of this:
+
+- the bucket must be in the pipeline's Region
+- its policy must be scoped tightly, since artifacts contain configuration
+- an unfamiliar key in an error message is usually an artifact key: `<pipeline-name>/<OutputArtifactName>/<random>.zip`
 
 ```bash
 PIPELINE_BUCKET="usms-pipeline-artifacts"
@@ -108,19 +201,22 @@ aws s3api put-public-access-block \
   --public-access-block-configuration \
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 ```
-![6](../../screenshots/lab11/6.png)
 
-Verify
+![Step 5: Artifact bucket created](../../screenshots/lab11/6.png)
+
+**Verify**
 
 ```bash
 aws s3api get-bucket-versioning --bucket "$PIPELINE_BUCKET" --output table
 aws s3api get-bucket-tagging    --bucket "$PIPELINE_BUCKET" \
   --query 'TagSet[].[Key,Value]' --output table
 ```
-![7](../../screenshots/lab11/7.png)
 
-Step 6 - Prove versioning is on¶
-CodePipeline refuses an unversioned S3 source, so prove what the bucket does, not what its configuration says: put two objects at one key, then list the versions. See S3 versioning.
+![Step 5 verify: Versioning enabled and tags applied](../../screenshots/lab11/7.png)
+
+### Step 6: Prove versioning is on
+
+CodePipeline refuses an unversioned S3 source. Test what the bucket actually does, not just what its configuration says: put two objects at one key, then list the versions.
 
 ```bash
 printf 'first\n'  > /tmp/usms-version-probe.txt
@@ -137,8 +233,10 @@ aws s3api list-object-versions \
   --query 'Versions[].{Version:VersionId,Latest:IsLatest,Size:Size}' \
   --output table
 ```
-![8](../../screenshots/lab11/8.png)
 
+![Step 6: Two versions at one key](../../screenshots/lab11/8.png)
+
+**Clean up the probe:** delete every version. The last command should print `0`.
 
 ```bash
 aws s3api list-object-versions --bucket "$PIPELINE_BUCKET" --prefix probe/ \
@@ -151,19 +249,20 @@ done
 aws s3api list-object-versions --bucket "$PIPELINE_BUCKET" --prefix probe/ \
   --query 'length(Versions || `[]`)' --output text
 ```
-![9](../../screenshots/lab11/9.png)
 
-Step 7 - Write the enrolment service source tree¶
-Give the pipeline something to build, with a version number you can watch move through it.
+![Step 6: Probe versions removed](../../screenshots/lab11/9.png)
 
-Run from
+---
 
-```bash
-aws-floci-course/labs/lab-11-cicd/app/
-```
+## Part C: Application Source
 
+### Step 7: Write the enrolment service source tree
 
-Command - part 1, the application itself
+This gives the pipeline something to build, with a version number you can follow through each stage.
+
+> **Run from:** `~/aws-floci-course/labs/lab-11-cicd/app/`
+
+**Part 1: the application**
 
 ```bash
 cd ~/aws-floci-course/labs/lab-11-cicd/app
@@ -188,9 +287,7 @@ ok
 EOF
 ```
 
-
-
-Command - part 2, the configuration the build validates
+**Part 2: the configuration the build validates**
 
 ```bash
 cat > config/service.json << 'EOF'
@@ -207,9 +304,10 @@ EOF
 
 python3 -m json.tool config/service.json > /dev/null && echo "service.json is valid JSON"
 ```
-![10](../../screenshots/lab11/10.png)
 
-Command - part 3, the test
+![Step 7: service.json validated](../../screenshots/lab11/10.png)
+
+**Part 3: the smoke test**
 
 ```bash
 cat > tests/smoke.sh << 'EOF'
@@ -240,20 +338,23 @@ EOF
 chmod +x tests/smoke.sh
 bash -n tests/smoke.sh && echo "syntax OK"
 ```
-![11](../../screenshots/lab11/11.png)
 
-verify
+![Step 7: Smoke test syntax OK](../../screenshots/lab11/11.png)
+
+**Verify**
 
 ```bash
-
 cd ~/aws-floci-course
 find labs/lab-11-cicd/app -type f | sort
 ```
-![12](../../screenshots/lab11/12.png)
 
-Step 8 - Write buildspec.yml¶
+![Step 7 verify: Source tree listing](../../screenshots/lab11/12.png)
 
-Run from
+### Step 8: Write `buildspec.yml`
+
+Create `labs/lab-11-cicd/app/buildspec.yml` with `version: 0.2`, all four phases (`install`, `pre_build`, `build`, `post_build`), and `artifacts.base-directory: dist`. Then validate it.
+
+> **Run from:** `~/aws-floci-course/labs/lab-11-cicd/app/`
 
 ```bash
 python3 - << 'PY'
@@ -270,21 +371,27 @@ assert doc["version"] == 0.2, "version must be 0.2"
 for phase in ("install", "pre_build", "build", "post_build"):
     assert phase in doc["phases"], f"missing phase: {phase}"
 print("buildspec.yml parses, and all four phases are present.")
+PY
 ```
-![13](../../screenshots/lab11/13.png)
 
+![Step 8: buildspec.yml parses](../../screenshots/lab11/13.png)
 
-verify
+**Verify** (from the repository root)
 
 ```bash
 grep -c '' labs/lab-11-cicd/app/buildspec.yml
 grep -n 'base-directory\|^version\|^phases\|^artifacts' labs/lab-11-cicd/app/buildspec.yml
 ```
-![14](../../screenshots/lab11/14.png)
 
-Step 9 - Create the CodeBuild service role and its policy
+![Step 8 verify: buildspec key lines](../../screenshots/lab11/14.png)
 
-Command - part 1, the trust policy
+---
+
+## Part D: CodeBuild
+
+### Step 9: Create the CodeBuild service role and its policy
+
+**Part 1: the trust policy.** Only CodeBuild, acting for this account, may assume the role.
 
 ```bash
 cd ~/aws-floci-course
@@ -308,9 +415,16 @@ EOF
 
 python3 -m json.tool policies/trust-codebuild.json > /dev/null && echo "trust-codebuild.json is valid JSON"
 ```
-![15](../../screenshots/lab11/15.png)
 
-Command - part 2, the permissions policy
+![Step 9: Trust policy validated](../../screenshots/lab11/15.png)
+
+**Part 2: the permissions policy.** The build may write its own logs and use the artifact bucket, and is explicitly denied access to student records.
+
+| Sid | Effect | Scope |
+|---|---|---|
+| `WriteItsOwnBuildLogs` | Allow | `/aws/codebuild/usms-enrolment-build` log group only |
+| `ReadSourceAndWriteArtifacts` | Allow | `usms-pipeline-artifacts` bucket only |
+| `BuildsDoNotTouchStudentRecords` | **Deny** | all `s3:*` on `usms-student-data` |
 
 ```bash
 cat > policies/usms-codebuild-policy.json << 'EOF'
@@ -360,9 +474,10 @@ EOF
 
 python3 -m json.tool policies/usms-codebuild-policy.json > /dev/null && echo "usms-codebuild-policy.json is valid JSON"
 ```
-![16](../../screenshots/lab11/16.png)
 
-Command - part 3, create the role and attach
+![Step 9: Permissions policy validated](../../screenshots/lab11/16.png)
+
+**Part 3: create the role and attach the policy**
 
 ```bash
 BUILD_ROLE="usms-codebuild-role"
@@ -388,19 +503,22 @@ aws iam attach-role-policy \
 BUILD_ROLE_ARN=$(aws iam get-role --role-name "$BUILD_ROLE" --query 'Role.Arn' --output text)
 echo "$BUILD_ROLE_ARN"
 ```
-![17](../../screenshots/lab11/17.png)
 
+![Step 9: Build role created](../../screenshots/lab11/17.png)
 
-Verify
+**Verify**
 
 ```bash
 aws iam list-attached-role-policies --role-name "$BUILD_ROLE" --output table
 aws iam get-role --role-name "$BUILD_ROLE" \
   --query 'Role.AssumeRolePolicyDocument.Statement[0].Principal' --output json
 ```
-![18](../../screenshots/lab11/18.png)
 
-Step 10 - Create the CodeBuild project
+![Step 9 verify: Policy attached, principal is CodeBuild](../../screenshots/lab11/18.png)
+
+### Step 10: Create the CodeBuild project
+
+**Write the template.** The heredoc is deliberately **unquoted** (`<< EOF`) so the shell expands `${BUILD_ROLE_ARN}`. The final `grep` should print `0`; anything else means a variable was left unexpanded.
 
 ```bash
 cat > templates/lab-11-codebuild-project.json << EOF
@@ -451,9 +569,10 @@ python3 -m json.tool templates/lab-11-codebuild-project.json > /dev/null \
   && echo "project template is valid JSON"
 grep -c '\$' templates/lab-11-codebuild-project.json
 ```
-![19](../../screenshots/lab11/19.png)
 
-Command - create it
+![Step 10: Project template valid, no unexpanded variables](../../screenshots/lab11/19.png)
+
+**Create the project**
 
 ```bash
 aws codebuild create-project \
@@ -461,18 +580,21 @@ aws codebuild create-project \
   --query 'project.{Name:name,Role:serviceRole,Image:environment.image,Source:source.type}' \
   --output table
 ```
-![20](../../screenshots/lab11/20.png)
 
-Step 11 - Package and upload the source
-Command - part 1, the packer
+![Step 10: CodeBuild project created](../../screenshots/lab11/20.png)
+
+### Step 11: Package and upload the source
+
+**Part 1: check the packer script**
+
 ```bash
 chmod +x scripts/utilities/usms-pack-source.sh
 bash -n scripts/utilities/usms-pack-source.sh && echo "syntax OK"
 ```
-![21](../../screenshots/lab11/21.png)
 
+![Step 11: Packer syntax OK](../../screenshots/lab11/21.png)
 
-Command - part 2, pack and upload
+**Part 2: pack and upload.** The command prints the new object's `VersionId`.
 
 ```bash
 ./scripts/utilities/usms-pack-source.sh \
@@ -485,11 +607,13 @@ aws s3api put-object \
   --body outputs/usms-enrolment-src.zip \
   --query 'VersionId' --output text
 ```
-![22](../../screenshots/lab11/22.png)
 
+![Step 11: Source uploaded with a version ID](../../screenshots/lab11/22.png)
 
-Step 12 - Run the build on its own¶
-Prove the build works before putting it in a pipeline; otherwise you debug two systems at once.
+### Step 12: Run the build on its own
+
+> [!TIP]
+> Get the build working before you put it in a pipeline. Otherwise you are debugging two systems at once.
 
 ```bash
 BUILD_ID=$(aws codebuild start-build \
@@ -498,10 +622,10 @@ BUILD_ID=$(aws codebuild start-build \
 
 echo "$BUILD_ID"
 ```
-![23](../../screenshots/lab11/23.png)
 
+![Step 12: Build started](../../screenshots/lab11/23.png)
 
-Verify - poll until it finishes
+**Verify:** poll until the build finishes.
 
 ```bash
 for i in $(seq 1 40); do
@@ -516,11 +640,14 @@ for i in $(seq 1 40); do
   sleep 10
 done
 ```
-![24](../../screenshots/lab11/24.png)
 
+![Step 12 verify: Build polled to completion](../../screenshots/lab11/24.png)
 
-Step 13 - Read the build output and the logs¶
-Per-phase timing and the log are the pair you use for every failed build.
+### Step 13: Read the build output and the logs
+
+You will use per-phase timings and the build log together to investigate every failed build.
+
+**Phase timings**
 
 ```bash
 aws codebuild batch-get-builds --ids "$BUILD_ID" \
@@ -529,9 +656,10 @@ aws codebuild batch-get-builds --ids "$BUILD_ID" \
 
 aws codebuild batch-get-builds --ids "$BUILD_ID" > "outputs/lab-11-build-$(date +%s).json"
 ```
-![25](../../screenshots/lab11/25.png)
 
-Command - the log
+![Step 13: Per-phase status and duration](../../screenshots/lab11/25.png)
+
+**The log**
 
 ```bash
 LOG_GROUP=$(aws codebuild batch-get-builds --ids "$BUILD_ID" \
@@ -547,55 +675,68 @@ aws logs get-log-events \
   --limit 60 \
   --query 'events[].message' --output text
 ```
-![26](../../screenshots/lab11/26.png)
 
-Command - read the artifact back
+![Step 13: Build log events](../../screenshots/lab11/26.png)
+
+**Read the artifact back**
 
 ```bash
 aws s3api list-objects-v2 --bucket usms-pipeline-artifacts --prefix build/ \
   --query 'Contents[].{Key:Key,Size:Size}' --output table
 ```
-![27](../../screenshots/lab11/27.png)
 
-Step 14 - The local buildspec runner
-```bash 
+![Step 13: Build artifact in S3](../../screenshots/lab11/27.png)
+
+### Step 14: Run the buildspec locally
+
+The local runner executes the same phases on your machine, so you can catch errors before you upload anything.
+
+```bash
 chmod +x scripts/utilities/usms-buildspec-run.sh
 bash -n scripts/utilities/usms-buildspec-run.sh && echo "syntax OK"
 
 ./scripts/utilities/usms-buildspec-run.sh labs/lab-11-cicd/app
 ```
-![28](../../screenshots/lab11/28.png)
 
-Verify
+![Step 14: Local buildspec run](../../screenshots/lab11/28.png)
 
-```bash 
+**Verify**
+
+```bash
 cat labs/lab-11-cicd/app/dist/build-metadata.json
 grep -n 'release:' labs/lab-11-cicd/app/dist/index.html
 ```
-![29](../../screenshots/lab11/29.png)
 
+![Step 14 verify: Build metadata and release stamp](../../screenshots/lab11/29.png)
 
-```bash 
+**Keep build output out of Git**
+
+```bash
 grep -q '^labs/lab-11-cicd/app/dist/' .gitignore || \
   printf 'labs/lab-11-cicd/app/dist/\n' >> .gitignore
 
 git check-ignore -v labs/lab-11-cicd/app/dist/build-metadata.json
 ```
-![30](../../screenshots/lab11/30.png)
 
-Step 15 - Create the CodePipeline service role and its policy
+![Step 14: dist/ is git-ignored](../../screenshots/lab11/30.png)
 
-Command - part 1, the documents
+---
+
+## Part E: CodePipeline
+
+### Step 15: Create the CodePipeline service role and its policy
+
+**Part 1: validate the documents.** Write `policies/trust-codepipeline.json`, which trusts `codepipeline.amazonaws.com`, and `policies/usms-codepipeline-policy.json`. The policy should allow the artifact store, one build project, and a scoped `iam:PassRole`. Then check that both are valid JSON:
 
 ```bash
 for f in policies/trust-codepipeline.json policies/usms-codepipeline-policy.json; do
   python3 -m json.tool "$f" > /dev/null && echo "$f is valid JSON"
 done
 ```
-![31](../../screenshots/lab11/31.png)
 
+![Step 15: Pipeline policy documents validated](../../screenshots/lab11/31.png)
 
-Command - part 2, create and attach
+**Part 2: create the role and attach the policy**
 
 ```bash
 PIPELINE_ROLE="usms-codepipeline-role"
@@ -619,28 +760,32 @@ aws iam attach-role-policy --role-name "$PIPELINE_ROLE" --policy-arn "$PIPELINE_
 PIPELINE_ROLE_ARN=$(aws iam get-role --role-name "$PIPELINE_ROLE" --query 'Role.Arn' --output text)
 echo "$PIPELINE_ROLE_ARN"
 ```
-![32](../../screenshots/lab11/32.png)
 
-Verify
+![Step 15: Pipeline role created](../../screenshots/lab11/32.png)
+
+**Verify**
 
 ```bash
 aws iam get-policy --policy-arn "$PIPELINE_POLICY_ARN" \
   --query 'Policy.{Name:PolicyName,Default:DefaultVersionId,Attached:AttachmentCount}' --output table
 ```
-![33](../../screenshots/lab11/33.png)
 
-Step 16 - Write the pipeline definition
+![Step 15 verify: Policy attached once](../../screenshots/lab11/33.png)
+
+### Step 16: Write the pipeline definition
+
+Write `templates/lab-11-pipeline.json`. It defines `usms-enrolment-pipeline` with two stages, **Source** (S3 provider, output `SourceOutput`) and **Build** (CodeBuild `usms-enrolment-build`, output `BuildOutput`), and uses `usms-pipeline-artifacts` as the artifact store. Validate it; the `grep` should print `0`.
 
 ```bash
-
 python3 -m json.tool templates/lab-11-pipeline.json > /dev/null && echo "pipeline template is valid JSON"
 grep -c '\$' templates/lab-11-pipeline.json
 ```
-![34](../../screenshots/lab11/34.png)
 
+![Step 16: Pipeline template valid](../../screenshots/lab11/34.png)
 
-Step 17 - Create the pipeline¶
-Turn the document into a pipeline and learn get-pipeline-state, the command you will use most.
+### Step 17: Create the pipeline
+
+This step turns the template into a pipeline. It also introduces `get-pipeline-state`, the command you will use most often.
 
 ```bash
 aws codepipeline create-pipeline \
@@ -648,21 +793,24 @@ aws codepipeline create-pipeline \
   --query 'pipeline.{Name:name,Role:roleArn,Stages:length(stages)}' \
   --output table
 ```
-![35](../../screenshots/lab11/35.png)
 
-Verify
+![Step 17: Pipeline created with two stages](../../screenshots/lab11/35.png)
+
+**Verify**
 
 ```bash
 aws codepipeline get-pipeline-state --name usms-enrolment-pipeline \
   --query 'stageStates[].{Stage:stageName,Status:latestExecution.status,Action:actionStates[0].actionName,ActionStatus:actionStates[0].latestExecution.status}' \
   --output table
 ```
-![36](../../screenshots/lab11/36.png)
 
+![Step 17 verify: Pipeline state](../../screenshots/lab11/36.png)
 
-Step 18 - Hand the project to the pipeline¶
+### Step 18: Hand the project to the pipeline
 
-```bash 
+Switch the project's source and artifacts to `CODEPIPELINE`. From now on the pipeline supplies the build's input and receives its output.
+
+```bash
 aws codebuild update-project \
   --name usms-enrolment-build \
   --source type=CODEPIPELINE,buildspec=buildspec.yml \
@@ -670,18 +818,22 @@ aws codebuild update-project \
   --query 'project.{Source:source.type,Artifacts:artifacts.type}' \
   --output table
 ```
-![37](../../screenshots/lab11/37.png)
 
-Verify - the escape hatch, and the cost
+![Step 18: Project source and artifacts set to CODEPIPELINE](../../screenshots/lab11/37.png)
+
+**Verify the trade-off:** the project can no longer be started on its own. Running it directly now fails, because only the pipeline can supply its source.
 
 ```bash
 aws codebuild start-build --project-name usms-enrolment-build 2>&1 | head -3
 ```
-![38](../../screenshots/lab11/38.png)
 
-Step 19 - Run the pipeline end to end, and prove it consumed your source¶
+![Step 18 verify: Standalone start-build rejected](../../screenshots/lab11/38.png)
 
-```bash 
+### Step 19: Run the pipeline end to end and confirm it used your source
+
+**Part 1: bump the release and upload a new source version**
+
+```bash
 printf 'r4\n' > labs/lab-11-cicd/app/VERSION
 
 ./scripts/utilities/usms-pack-source.sh \
@@ -701,9 +853,10 @@ aws s3api list-object-versions --bucket usms-pipeline-artifacts \
   --query 'Versions[].{Version:VersionId,Latest:IsLatest,Modified:LastModified}' \
   --output table
 ```
-![39](../../screenshots/lab11/39.png)
 
-Command - part 2, run
+![Step 19: New source version uploaded](../../screenshots/lab11/39.png)
+
+**Part 2: run and watch**
 
 ```bash
 EXEC_ID=$(aws codepipeline start-pipeline-execution \
@@ -727,10 +880,10 @@ for i in $(seq 1 30); do
   sleep 10
 done
 ```
-![40](../../screenshots/lab11/40.png)
 
+![Step 19: Pipeline execution succeeded](../../screenshots/lab11/40.png)
 
-Command - part 3, read back
+**Part 3: read the artifact back.** `release` should be `r4`, and `srcVersion` should match `$NEW_VERSION_ID`.
 
 ```bash
 BUILD_ART_KEY=$(aws s3api list-objects-v2 \
@@ -759,13 +912,18 @@ print("buildId  :", meta["buildId"])
 print("srcVersion:", meta["sourceVersion"])
 PY
 ```
-![41](../../screenshots/lab11/41.png)
 
+![Step 19: Artifact carries release r4 and the new source version](../../screenshots/lab11/41.png)
 
-Step 20 - Make the build fail on purpose, then fix it¶
-Learn to read a failure you broke deliberately, where you already know the answer.
+---
 
-Command - part 1, break it
+## Part F: Failure and Recovery
+
+### Step 20: Make the build fail on purpose, then fix it
+
+Practise reading a failure when you already know its cause.
+
+**Part 1: break it** by changing the container name so it no longer matches the ECS task definition.
 
 ```bash
 python3 - << 'PY'
@@ -786,9 +944,10 @@ BAD_EXEC=$(aws codepipeline start-pipeline-execution --name usms-enrolment-pipel
   --query 'pipelineExecutionId' --output text)
 echo "execution: $BAD_EXEC"
 ```
-![42](../../screenshots/lab11/42.png)
 
-Command - part 2, diagnose it
+![Step 20: Broken source uploaded and pipeline started](../../screenshots/lab11/42.png)
+
+**Part 2: diagnose it.** The Build stage should show `Failed`, and the error should point to the smoke test.
 
 ```bash
 sleep 20
@@ -797,10 +956,12 @@ aws codepipeline get-pipeline-state --name usms-enrolment-pipeline \
   --query 'stageStates[].{Stage:stageName,Status:latestExecution.status,Summary:actionStates[0].latestExecution.summary,Error:actionStates[0].latestExecution.errorDetails.message}' \
   --output json | tee outputs/lab-11-pipeline-state.json
 ```
-![43](../../screenshots/lab11/43.png)
 
-Command - part 3, fix it
-```bash 
+![Step 20: Build stage failed with error details](../../screenshots/lab11/43.png)
+
+**Part 3: fix it.** Restore the value, check it locally first, then repack and rerun.
+
+```bash
 python3 - << 'PY'
 import json
 p = "labs/lab-11-cicd/app/config/service.json"
@@ -820,22 +981,26 @@ aws s3api put-object --bucket usms-pipeline-artifacts \
 
 aws codepipeline start-pipeline-execution --name usms-enrolment-pipeline \
   --query 'pipelineExecutionId' --output text
-
 ```
-![44](../../screenshots/lab11/44.png)
 
+![Step 20: Fixed and re-run](../../screenshots/lab11/44.png)
 
+---
 
-Step 21 - Record this lab's outputs, and commit¶
+## Part G: Record and Commit
 
-```bash 
+### Step 21: Record this lab's outputs and commit
+
+Write `configs/lab-11.env` with this lab's values, then check that none are empty or `None`:
+
+```bash
 grep -n 'export .*=$\|None' configs/lab-11.env || echo "all values populated"
 grep -c '^export' configs/lab-11.env
 ```
-![45](../../screenshots/lab11/45.png)
 
+![Step 21: lab-11.env fully populated](../../screenshots/lab11/45.png)
 
-Verify
+**Verify**
 
 ```bash
 source configs/lab-11.env
@@ -844,13 +1009,141 @@ printf 'bucket=%s versioning=%s project=%s stages=%s release=%s path=%s\n' \
   "$USMS_BUILD_PROJECT" "$USMS_PIPELINE_STAGE_COUNT" \
   "$USMS_RELEASE_TAG" "$USMS_CICD_SUPPORT_PATH"
 ```
-![46](../../screenshots/lab11/46.png)
 
-Command - commit
+![Step 21 verify: Recorded values](../../screenshots/lab11/46.png)
+
+**Stage and commit**
 
 ```bash
-git add labs/lab-11-cicd/app labs/lab-11-cicd
-git add policies templates scripts/utilities scripts/cleanup outputs notes configs/lab-11.env 
+git add labs/lab-11-cicd
+git add policies templates scripts/utilities scripts/cleanup outputs notes configs/lab-11.env
+git commit -m "Lab 11: CI/CD pipeline with CodePipeline and CodeBuild"
+```
 
+![Step 21: Lab 11 files staged](../../screenshots/lab11/47.png)
 
+---
 
+## Verification
+
+The script checks the environment first. A script that only checks its own resources keeps passing until a restart deletes them.
+
+```bash
+chmod +x scripts/utilities/verify-lab-11.sh
+bash -n scripts/utilities/verify-lab-11.sh && echo "syntax OK"
+./scripts/utilities/verify-lab-11.sh
+```
+
+<details>
+<summary><strong>Sample output: PASS=44, FAIL=2</strong></summary>
+
+```text
+syntax OK
+== Environment ==
+  ok   Floci container running
+  ok   storage mode is NOT memory
+  ok   AWS CLI reaches Floci
+  ok   account is 000000000000
+== Earlier-lab dependencies ==
+  ok   configs/lab-04.env present
+  ok   configs/lab-10.env present
+  ok   ECS cluster usms-ecs-cluster exists
+  ok   ECS service usms-enrolment-svc exists
+  ok   container name is enrolment-api
+== Artifact store ==
+  ok   bucket usms-pipeline-artifacts exists
+  ok   versioning is Enabled
+  ok   public access is blocked
+  ok   source object present
+  ok   source has at least two versions
+== Pipeline identities ==
+  ok   role usms-codebuild-role exists
+  ok   build role trusts codebuild.amazonaws.com
+  ok   policy USMSCodeBuildBase exists
+  ok   USMSCodeBuildBase attached to the build role
+  ok   role usms-codepipeline-role exists
+  ok   pipeline role trusts codepipeline.amazonaws.com
+  ok   policy USMSCodePipelineBase exists
+  ok   USMSCodePipelineBase attached to the pipeline role
+  ok   pipeline policy scopes iam:PassRole
+== CodeBuild ==
+  ok   project usms-enrolment-build exists
+  ok   project source type is CODEPIPELINE
+  ok   project runs as usms-codebuild-role
+  FAIL project image is standard:7.0
+== CodePipeline ==
+  ok   pipeline usms-enrolment-pipeline exists
+  ok   pipeline has 2 stages
+  ok   stage 1 provider is S3
+  ok   stage 2 builds usms-enrolment-build
+== Source tree and scripts ==
+  ok   buildspec.yml present
+  ok   buildspec declares version 0.2
+  ok   buildspec has all four phases
+  ok   artifacts base-directory is dist
+  ok   smoke test is valid bash
+  ok   usms-pack-source.sh executable and valid
+  ok   usms-buildspec-run.sh executable and valid
+== Files and Git hygiene ==
+  ok   configs/lab-11.env present
+  ok   no empty or None values in lab-11.env
+  ok   codebuild project template is valid JSON
+  ok   pipeline template is valid JSON
+  FAIL templates contain no unexpanded variables
+  ok   all four policy documents are valid JSON
+  ok   no secret is tracked
+  ok   build output dist/ is git-ignored
+
+PASS=44  FAIL=2
+```
+
+</details>
+
+![Verification: verify-lab-11.sh results](../../screenshots/lab11/48.png)
+
+### Reading the results
+
+Read failures from the top down. A failure in an earlier block often causes the failures below it.
+
+| Failing block | Likely cause / where to look |
+|---|---|
+| Environment | Floci is not running, or is in memory mode. Fix this first. |
+| Earlier-lab dependencies | Re-run `verify-lab-04.sh` and `verify-lab-10.sh`. |
+| Artifact store | Steps 5 and 6. |
+| CodeBuild / CodePipeline | If the support probe reported **Path B or C**, eight failures here are **expected**. Record the path. |
+| Source tree | Steps 7, 8, 11 and 14. |
+| Files and Git hygiene | Step 21 and `.gitignore`. |
+
+### Notes on the two failures above
+
+| Check | Explanation |
+|---|---|
+| `project image is standard:7.0` | Step 18's `update-project` call can cause the emulator to report a different image. Run `aws codebuild batch-get-projects --names usms-enrolment-build --query 'projects[0].environment.image'` and compare. |
+| `templates contain no unexpanded variables` | A template still contains a literal `$`. Usually `BUILD_ROLE_ARN` was empty when Step 10 ran, or a quoted heredoc (`<< 'EOF'`) was used. Run `grep -n '\$' templates/lab-11-*.json`, set the variable, and regenerate the file. |
+
+---
+
+## Cleanup
+
+The cleanup script removes everything this lab created. Build it and check its syntax now, but **do not run it** until the end of the course, because later labs depend on these resources.
+
+```bash
+chmod +x scripts/cleanup/lab-11-cleanup.sh
+bash -n scripts/cleanup/lab-11-cleanup.sh && echo "syntax OK - do NOT run it"
+```
+
+![Cleanup: Script syntax OK, not executed](../../screenshots/lab11/49.png)
+
+---
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Resources disappear after a restart | Floci is in memory mode. Re-run `floci-storage-check.sh` and switch to hybrid storage. |
+| An unfamiliar S3 key appears in an error | It is an artifact key (`<pipeline>/<OutputArtifact>/<random>.zip`). Look in the artifact bucket. |
+| Pipeline Source stage fails | The source bucket is not versioned. Repeat Step 6. |
+| Build fails in `install` | `buildspec.yml` indentation. Run the Step 8 YAML check. |
+| Build fails in `post_build` / smoke tests | Run `usms-buildspec-run.sh` locally and read which `FAIL` line fired. |
+| `start-build` fails after Step 18 | Expected. The project now accepts source only from CodePipeline. |
+| Artifact shows the old release | You started the pipeline before the new source version finished uploading. Check `list-object-versions`, then rerun. |

@@ -1,0 +1,70 @@
+{
+    "taskDefinitionArn": "arn:aws:ecs:us-east-1:000000000000:task-definition/usms-enrolment:1",
+    "containerDefinitions": [
+        {
+            "name": "enrolment-api",
+            "image": "public.ecr.aws/nginx/nginx:stable-alpine",
+            "portMappings": [
+                {
+                    "containerPort": 80,
+                    "hostPort": 0,
+                    "protocol": "tcp"
+                }
+            ],
+            "essential": true,
+            "environment": [
+                {
+                    "name": "USMS_SERVICE",
+                    "value": "enrolment"
+                },
+                {
+                    "name": "USMS_BUCKET",
+                    "value": "usms-student-data"
+                },
+                {
+                    "name": "AWS_REGION",
+                    "value": "$AWS_REGION_COURSE"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "$LOG_GROUP",
+                    "awslogs-region": "$AWS_REGION_COURSE",
+                    "awslogs-stream-prefix": "enrolment"
+                }
+            }
+        }
+    ],
+    "family": "usms-enrolment",
+    "taskRoleArn": "$TASK_ROLE_ARN",
+    "executionRoleArn": "$EXEC_ROLE_ARN",
+    "networkMode": "awsvpc",
+    "revision": 1,
+    "status": "ACTIVE",
+    "requiresAttributes": [
+        {
+            "name": "com.amazonaws.ecs.capability.docker-remote-api.1.18"
+        },
+        {
+            "name": "ecs.capability.task-eni"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.task-iam-role"
+        },
+        {
+            "name": "com.amazonaws.ecs.capability.logging-driver.awslogs"
+        }
+    ],
+    "compatibilities": [
+        "EC2",
+        "FARGATE"
+    ],
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "registeredAt": "2026-10-08T00:06:14.827000+06:00",
+    "registeredBy": "arn:aws:iam:us-east-1:000000000000:root"
+}

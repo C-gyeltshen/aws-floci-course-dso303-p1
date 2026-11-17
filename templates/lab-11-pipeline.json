@@ -1,7 +1,7 @@
 {
   "pipeline": {
     "name": "usms-enrolment-pipeline",
-    "roleArn": "${PIPELINE_ROLE_ARN}",
+    "roleArn": "arn:aws:iam::000000000000:role/usms-codepipeline-role",
     "artifactStore": {
       "type": "S3",
       "location": "usms-pipeline-artifacts"

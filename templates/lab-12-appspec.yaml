@@ -1,0 +1,16 @@
+version: 0.0
+Resources:
+  - TargetService:
+      Type: AWS::ECS::Service
+      Properties:
+        TaskDefinition: "<TASK_DEFINITION>"
+        LoadBalancerInfo:
+          ContainerName: "enrolment-api"
+          ContainerPort: 80
+        PlatformVersion: "LATEST"
+Hooks:
+  - BeforeInstall: "usms-deploy-hook-before-install"
+  - AfterInstall: "usms-deploy-hook-after-install"
+  - AfterAllowTestTraffic: "usms-deploy-hook-smoke-test"
+  - BeforeAllowTraffic: "usms-deploy-hook-before-traffic"
+  - AfterAllowTraffic: "usms-deploy-hook-after-traffic"
