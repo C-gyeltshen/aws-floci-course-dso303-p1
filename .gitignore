@@ -26,3 +26,4 @@ Thumbs.db
 .vscode/
 .idea/
 EOF
+labs/lab-11-cicd/app/dist/
