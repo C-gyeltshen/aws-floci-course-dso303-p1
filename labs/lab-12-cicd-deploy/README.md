@@ -1,22 +1,111 @@
-# Lab12- Deploying to Amazon ECS from the Pipeline¶
+# Lab 12: Deploying to Amazon ECS from the Pipeline
 
-prequsites
-```bash 
+> **Project:** USMS (University Student Management System) · **Emulator:** Floci · **Account:** `000000000000` · **Region:** `us-east-1`
+
+Lab 11 ended with a pipeline that builds and tests an artifact but does not deploy it. In this lab you package the enrolment service as a **container image**, push it to **Amazon ECR**, and add a **Deploy stage** that updates the running ECS service. You do the deployment once by hand, then let the pipeline do it, and finally practise a rollback.
+
+---
+
+## Contents
+
+1. [Architecture](#architecture)
+2. [Learning Objectives](#learning-objectives)
+3. [Prerequisites](#prerequisites)
+4. [Resources Created and Changed](#resources-created-and-changed)
+5. [Part A: Environment Setup](#part-a-environment-setup) (Steps 1–4)
+6. [Part B: Container Registry and Image](#part-b-container-registry-and-image) (Steps 5–9)
+7. [Part C: Manual Deployment](#part-c-manual-deployment) (Steps 10–11)
+8. [Part D: Upgrade the Build](#part-d-upgrade-the-build) (Steps 12–14)
+9. [Part E: Add the Deploy Stage](#part-e-add-the-deploy-stage) (Steps 15–17)
+10. [Part F: Rollback and Blue/Green](#part-f-rollback-and-bluegreen) (Steps 18–19)
+11. [Part G: Record and Commit](#part-g-record-and-commit) (Steps 20–21)
+12. [Verification](#verification)
+13. [Cleanup](#cleanup)
+14. [Troubleshooting](#troubleshooting)
+
+---
+
+## Architecture
+
+```
+  VERSION bump ──pack──▶ s3://usms-pipeline-artifacts/source/usms-enrolment-src.zip
+                                         │
+          ┌──────────────────────── usms-enrolment-pipeline ────────────────────────┐
+          │                                                                          │
+          │  Stage 1: Source (S3)                                                    │
+          │        │ SourceOutput                                                    │
+          │        ▼                                                                 │
+          │  Stage 2: Build (usms-enrolment-build, privileged)                       │
+          │        ├── docker build + push ──▶ ECR usms-enrolment:<release>          │
+          │        │ BuildOutput (dist/ incl. imagedefinitions.json)                 │
+          │        ▼                                                                 │
+          │  Stage 3: Deploy (ECS)                                                   │
+          │        └── new task definition revision ──▶ usms-enrolment-svc           │
+          └──────────────────────────────────────────────────────────────────────────┘
+```
+
+`imagedefinitions.json` connects Build to Deploy. It tells the ECS deploy action which container to update and which image to use:
+
+```json
+[ { "name": "enrolment-api", "imageUri": "<registry>/usms-enrolment:r7" } ]
+```
+
+---
+
+## Learning Objectives
+
+By the end of this lab you will be able to:
+
+- Create a private ECR repository, authenticate Docker against it, and push an image
+- Prove an image exists by reading it back from the registry by digest
+- Register a new ECS task definition revision and deploy it by hand
+- Use IAM policy **versions** to extend the CodeBuild and CodePipeline roles safely
+- Extend a buildspec to build an image and write `imagedefinitions.json`
+- Add an ECS Deploy stage to an existing pipeline and prove the service moved
+- Roll back a failed deployment, and read a CodeDeploy blue/green configuration
+
+---
+
+## Prerequisites
+
+Labs 04, 05 and 11 must pass verification, and Docker must be reachable.
+
+```bash
 cd ~/aws-floci-course
 source configs/course.env
 
-./scripts/utilities/floci-storage-check.sh      
-./scripts/utilities/verify-lab-04.sh           
-./scripts/utilities/verify-lab-05.sh           
-./scripts/utilities/verify-lab-11.sh           
+./scripts/utilities/floci-storage-check.sh
+./scripts/utilities/verify-lab-04.sh
+./scripts/utilities/verify-lab-05.sh
+./scripts/utilities/verify-lab-11.sh
 docker info >/dev/null 2>&1 && echo "docker reachable"
 ```
-![1](../../screenshots/lab12/1.png)
 
-7. Step-by-Step Implementation¶
+![Prerequisites: all earlier labs verified, Docker reachable](../../screenshots/lab12/1.png)
 
-Step 1 - Start Floci, and read what Lab 11 left you¶
-Start the environment and read Lab 11's inventory rather than assuming it.
+---
+
+## Resources Created and Changed
+
+| Type | Name | Action |
+|---|---|---|
+| ECR repository | `usms-enrolment` | Created (scan on push, AES256, mutable tags) |
+| Container images | `usms-enrolment:r6`, `usms-enrolment:r7` | Pushed |
+| ECS task definition | `usms-enrolment` revision 3 and later | Registered |
+| ECS service | `usms-enrolment-svc` | Updated (by hand, then by the pipeline) |
+| IAM policy | `USMSCodeBuildBase` | New default version **v2** (ECR push) |
+| IAM policy | `USMSCodePipelineBase` | New default version **v2** (ECS deploy) |
+| CodeBuild project | `usms-enrolment-build` | Privileged mode, `IMAGE_REPO_URI` variable |
+| CodePipeline | `usms-enrolment-pipeline` | **Deploy** stage added (3 stages) |
+| `docker-compose.yml` | ECR ports `5100-5104` | Published |
+
+---
+
+## Part A: Environment Setup
+
+### Step 1: Start Floci and read what Lab 11 left you
+
+Read Lab 11's inventory instead of assuming what it contains.
 
 ```bash
 cd ~/aws-floci-course
@@ -32,11 +121,12 @@ else
   echo "That is fine: Step 14 of this lab writes imagedefinitions.json in full."
 fi
 ```
-![2](../../screenshots/lab12/2.png)
 
+![Step 1: Floci running, Lab 11 readiness checked](../../screenshots/lab12/2.png)
 
-Step 2 - Source every earlier lab's environment¶
-This lab reads Labs 01, 04, 05 and 11 and writes a file the CloudFormation lab will read.
+### Step 2: Source every earlier lab's environment
+
+This lab reads values from Labs 01, 04, 05 and 11. It also writes a file that the CloudFormation lab reads later.
 
 ```bash
 source configs/course.env
@@ -58,28 +148,41 @@ printf 'cluster=%s service=%s container=%s pipeline=%s project=%s exec-role=%s\n
   "${USMS_ENROLMENT_CONTAINER:-MISSING}" "${USMS_PIPELINE_NAME:-MISSING}" \
   "${USMS_BUILD_PROJECT:-MISSING}" "${USMS_ECS_EXEC_ROLE_ARN:-MISSING}"
 ```
-![3](../../screenshots/lab12/3.png)
 
+!!! check "Expected result"
+    None of the six values prints `MISSING`.
 
-Step 3 - Probe the deployment surface¶
+![Step 2: Environment values populated](../../screenshots/lab12/3.png)
+
+### Step 3: Probe the deployment surface
+
+The probe reports which of Path A, B or C your emulator supports for ECR, image builds and the ECS deploy action. Write the result down, because it decides which verification failures are expected later.
+
 ```bash
 chmod +x scripts/utilities/deploy-support-probe.sh
 bash -n scripts/utilities/deploy-support-probe.sh && echo "syntax OK"
 ./scripts/utilities/deploy-support-probe.sh
 ```
-![4](../../screenshots/lab12/4.png)
 
-Step 4 - Publish the ECR port range¶
+![Step 3: Deployment support probe result](../../screenshots/lab12/4.png)
 
-Command
-```bash 
+### Step 4: Publish the ECR port range
+
+Floci serves ECR registries on ports `5100-5104`. Docker can only push to them if `docker-compose.yml` publishes that range.
+
+**Check the current state.** If the line starts with `#`, the ports are not published yet.
+
+```bash
 cd ~/aws-floci-course
 
 grep -n '5100-5104' docker-compose.yml
 ```
-![5](../../screenshots/lab12/5.png)
 
-```bash 
+![Step 4: Port range commented out](../../screenshots/lab12/5.png)
+
+**Back up the file, uncomment the port line, and check again**
+
+```bash
 cp docker-compose.yml "docker-compose.yml.bak-$(date +%Y%m%d%H%M%S)"
 
 sed -i.tmp -E 's/^([[:space:]]*)#[[:space:]]*(- *"?5100-5104)/\1\2/' docker-compose.yml
@@ -87,19 +190,25 @@ rm -f docker-compose.yml.tmp
 
 grep -n '5100-5104' docker-compose.yml
 ```
-![6](../../screenshots/lab12/6.png)
 
-Verify
+![Step 4: Port range uncommented](../../screenshots/lab12/6.png)
+
+**Verify:** restart Floci and confirm the ports are mapped.
 
 ```bash
 ./scripts/setup/floci-up.sh
 docker port floci
 ```
-![7](../../screenshots/lab12/7.png)
 
-Step 5 - Create the ECR repository¶
+![Step 4 verify: Ports 5100-5104 mapped](../../screenshots/lab12/7.png)
 
-```bash 
+---
+
+## Part B: Container Registry and Image
+
+### Step 5: Create the ECR repository
+
+```bash
 ECR_REPO="usms-enrolment"
 
 aws ecr create-repository \
@@ -111,10 +220,10 @@ aws ecr create-repository \
   --query 'repository.{Name:repositoryName,Uri:repositoryUri,Mutability:imageTagMutability}' \
   --output table
 ```
-![8](../../screenshots/lab12/8.png)
 
+![Step 5: ECR repository created](../../screenshots/lab12/8.png)
 
-Verify
+**Verify:** capture the repository URI and the registry host. Later steps use both.
 
 ```bash
 ECR_URI=$(aws ecr describe-repositories --repository-names "$ECR_REPO" \
@@ -123,35 +232,50 @@ ECR_REGISTRY="${ECR_URI%%/*}"
 
 printf 'repository uri : %s\nregistry host  : %s\n' "$ECR_URI" "$ECR_REGISTRY"
 ```
-![9](../../screenshots/lab12/9.png)
 
-Step 6 - Authenticate Docker against the registry¶
-```bash 
+![Step 5 verify: Repository URI and registry host](../../screenshots/lab12/9.png)
+
+### Step 6: Authenticate Docker against the registry
+
+```bash
 aws ecr get-login-password --region "$AWS_REGION_COURSE" \
   | docker login --username AWS --password-stdin "$ECR_REGISTRY"
 ```
-![10](../../screenshots/lab12/10.png)
 
+!!! check "Expected result"
+    `Login Succeeded`
 
-Step 7 - Write the Dockerfile¶
+![Step 6: Docker logged in to ECR](../../screenshots/lab12/10.png)
+
+### Step 7: Review the Dockerfile
+
+The Dockerfile and `.dockerignore` are in `labs/lab-11-cicd/app/`. Read the Dockerfile before you build from it.
+
 ```bash
-echo "--- Dockerfile ---"; cat Dockerfile
+echo "--- Dockerfile ---"; cat labs/lab-11-cicd/app/Dockerfile
 ```
-![11](../../screenshots/lab12/11.png)
 
-```bash 
+![Step 7: Dockerfile contents](../../screenshots/lab12/11.png)
+
+**Make sure the build input exists.** The image copies `dist/`, so rebuild it if it is missing.
+
+```bash
 cd ~/aws-floci-course
 ls -l labs/lab-11-cicd/app/Dockerfile labs/lab-11-cicd/app/.dockerignore
-test -d labs/lab-11-cicd/app/dist && echo "dist/ present - Step 8 can build" \
-  || ./scripts/utilities/usms-buildspec-run.sh labs/lab-11-cicd/app >/dev/null \
-     && echo "dist/ rebuilt by the local runner"
+
+if test -d labs/lab-11-cicd/app/dist; then
+  echo "dist/ present - Step 8 can build"
+else
+  ./scripts/utilities/usms-buildspec-run.sh labs/lab-11-cicd/app >/dev/null \
+    && echo "dist/ rebuilt by the local runner"
+fi
 ```
-![12](../../screenshots/lab12/12.png)
 
+![Step 7: Dockerfile, .dockerignore and dist/ present](../../screenshots/lab12/12.png)
 
-Step 8 - Build the image and push it, by hand¶
+### Step 8: Build the image and push it by hand
 
-Command - part 1, set the release and rebuild the output
+**Part 1: set the release and rebuild the output**
 
 ```bash
 cd ~/aws-floci-course
@@ -162,11 +286,10 @@ printf 'r6\n' > labs/lab-11-cicd/app/VERSION
 IMAGE_TAG=$(tr -d '[:space:]' < labs/lab-11-cicd/app/VERSION)
 echo "image tag will be: $IMAGE_TAG"
 ```
-![13](../../screenshots/lab12/13.png)
 
+![Step 8: Release r6 built locally](../../screenshots/lab12/13.png)
 
-
-Command - part 2, build, tag, push
+**Part 2: build, tag and push**
 
 ```bash
 cd labs/lab-11-cicd/app
@@ -179,12 +302,14 @@ docker push "$ECR_URI:$IMAGE_TAG"
 
 cd ~/aws-floci-course
 ```
-![14](../../screenshots/lab12/14.png)
 
-Step 9 - Prove the image is in the registry¶
-Pushed is the client reporting its own success; the registry's read-back is the evidence.
+![Step 8: Image built and pushed](../../screenshots/lab12/14.png)
 
-```bash 
+### Step 9: Prove the image is in the registry
+
+A successful push is only the Docker client's own report. The evidence is reading the image back from the registry.
+
+```bash
 aws ecr describe-images \
   --repository-name usms-enrolment \
   --query 'imageDetails[].{Tags:imageTags,Digest:imageDigest,SizeMB:imageSizeInBytes,Pushed:imagePushedAt}' \
@@ -198,22 +323,30 @@ IMAGE_DIGEST=$(aws ecr describe-images \
 printf '%s %s %s\n' "$IMAGE_TAG" "$IMAGE_DIGEST" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   | tee -a outputs/lab-12-image-digest.txt
 ```
-![15](../../screenshots/lab12/15.png)
 
-Verify - the create, perturb, read back proof
+![Step 9: Image r6 listed in ECR with its digest](../../screenshots/lab12/15.png)
 
-```bash 
+**Verify (create, remove, read back):** delete every local copy, then pull the image back by its digest.
+
+```bash
 docker rmi "$ECR_URI:$IMAGE_TAG" "usms-enrolment:$IMAGE_TAG" 2>/dev/null || true
 docker images | grep -c usms-enrolment || echo "no local copy remains"
 
 docker pull "$ECR_URI@$IMAGE_DIGEST"
 docker images --digests | grep usms-enrolment | head -3
 ```
-![16](../../screenshots/lab12/16.png)
 
-Step 10 - Register a task definition revision that names your image¶
+![Step 9 verify: Image pulled back by digest](../../screenshots/lab12/16.png)
 
-```bash 
+---
+
+## Part C: Manual Deployment
+
+### Step 10: Register a task definition revision that names your image
+
+**Generate the new revision from the current one.** The script removes the read-only fields and changes only the `enrolment-api` image.
+
+```bash
 cd ~/aws-floci-course
 
 aws ecs describe-task-definition \
@@ -248,36 +381,39 @@ PY
 python3 -m json.tool templates/lab-12-taskdef-v3.json > /dev/null && echo "valid JSON"
 grep -c '\$' templates/lab-12-taskdef-v3.json
 ```
-![17](../../screenshots/lab12/17.png)
 
+!!! check "Expected result"
+    The old image is `nginx`, the new one is the ECR URI, the file is valid JSON, and `grep` prints `0`.
 
+![Step 10: Task definition template generated](../../screenshots/lab12/17.png)
 
+**Register it**
 
-Command - register it
-
-```bash 
+```bash
 TASK_DEF_ARN=$(aws ecs register-task-definition \
   --cli-input-json file://templates/lab-12-taskdef-v3.json \
   --query 'taskDefinition.taskDefinitionArn' --output text)
 
 echo "$TASK_DEF_ARN"
 ```
-![18](../../screenshots/lab12/18.png)
 
+![Step 10: Revision 3 registered](../../screenshots/lab12/18.png)
 
-Verify
+**Verify:** only the image should change. CPU, memory and the health check stay as they were.
 
-```bash 
+```bash
 aws ecs describe-task-definition --task-definition usms-enrolment \
   --query 'taskDefinition.{Family:family,Revision:revision,Cpu:cpu,Memory:memory,Image:containerDefinitions[0].image,Health:containerDefinitions[0].healthCheck.command}' \
   --output json
 ```
-![19](../../screenshots/lab12/19.png)
 
-Step 11 - Deploy revision 3 by hand, and watch it¶
-Do it manually once so you recognise what the pipeline does later. From here the service runs your application.
+![Step 10 verify: Revision 3 uses the ECR image](../../screenshots/lab12/19.png)
 
-Command - part 1, a watcher you will reuse
+### Step 11: Deploy revision 3 by hand and watch it
+
+Deploy manually once so you recognise what the pipeline does later. From this point on, the service runs your application instead of the placeholder.
+
+**Part 1: a reusable watcher script**
 
 ```bash
 cat > scripts/utilities/usms-ecs-watch.sh << 'EOF'
@@ -321,14 +457,15 @@ EOF
 chmod +x scripts/utilities/usms-ecs-watch.sh
 bash -n scripts/utilities/usms-ecs-watch.sh && echo "syntax OK"
 ```
-![20](../../screenshots/lab12/20.png)
 
+![Step 11: Watcher script syntax OK](../../screenshots/lab12/20.png)
 
-A polling loop rather than aws ecs wait services-stable, which on this emulator can exhaust its attempts silently (Lab 04). It prints the deployment table every poll and exits 0 when there is one deployment with running equal to desired.
+!!! note "Why a polling loop?"
+    On this emulator, `aws ecs wait services-stable` can run out of attempts without reporting it (see Lab 04). The watcher prints the deployment table on every poll. It exits `0` once there is a single deployment whose running count equals the desired count.
 
-Command - part 2, deploy
+**Part 2: deploy**
 
-```bash 
+```bash
 aws ecs update-service \
   --cluster "$USMS_ECS_CLUSTER" \
   --service "$USMS_ENROLMENT_SERVICE" \
@@ -338,11 +475,29 @@ aws ecs update-service \
 
 ./scripts/utilities/usms-ecs-watch.sh || echo "did not settle - see the Floci note below"
 ```
-![21](../../screenshots/lab12/21.png)
 
-Step 12 - Version 2 of USMSCodeBuildBase¶
+!!! warning "Floci limitation"
+    If Floci does not run real tasks, the watcher may not report a settled deployment. The service's `taskDefinition` changing to revision 3 is still the evidence that the update was accepted.
 
-```bash 
+![Step 11: Service updated to revision 3](../../screenshots/lab12/21.png)
+
+---
+
+## Part D: Upgrade the Build
+
+### Step 12: Create version 2 of `USMSCodeBuildBase`
+
+The build now has to push images, so it needs ECR permissions. Creating a **new policy version** keeps v1 available for rollback and leaves the role attachment unchanged.
+
+| Sid | Change from v1 | Scope |
+|---|---|---|
+| `WriteItsOwnBuildLogs` | Unchanged | Build log group only |
+| `ReadSourceAndWriteArtifacts` | Unchanged | Artifact bucket only |
+| `GetARegistryTokenWhichCannotBeScoped` | **New** | `*` (AWS does not allow this action to be scoped) |
+| `PushAndPullTheEnrolmentImageOnly` | **New** | `repository/usms-enrolment` only |
+| `BuildsDoNotTouchStudentRecords` | Unchanged | Explicit deny on student data |
+
+```bash
 cat > policies/usms-codebuild-policy-v2.json << 'EOF'
 {
   "Version": "2012-10-17",
@@ -418,9 +573,10 @@ aws iam create-policy-version \
   --query 'PolicyVersion.{Version:VersionId,Default:IsDefaultVersion}' \
   --output table
 ```
-![22](../../screenshots/lab12/22.png)
 
-Verify
+![Step 12: USMSCodeBuildBase v2 created as default](../../screenshots/lab12/22.png)
+
+**Verify**
 
 ```bash
 aws iam get-policy --policy-arn arn:aws:iam::000000000000:policy/USMSCodeBuildBase \
@@ -429,11 +585,14 @@ aws iam get-policy --policy-arn arn:aws:iam::000000000000:policy/USMSCodeBuildBa
 aws iam list-policy-versions --policy-arn arn:aws:iam::000000000000:policy/USMSCodeBuildBase \
   --query 'Versions[].{Version:VersionId,Default:IsDefaultVersion,Created:CreateDate}' --output table
 ```
-![23](../../screenshots/lab12/23.png)
 
-Step 13 - Let the build run Docker¶
+![Step 12 verify: v1 and v2 listed, v2 is default](../../screenshots/lab12/23.png)
 
-```bash 
+### Step 13: Let the build run Docker
+
+`templates/lab-12-codebuild-update.json` turns on `privilegedMode`, which a build needs to run the Docker daemon. It also adds the `IMAGE_REPO_URI` environment variable. Change only the `environment` block, so the source type stays `CODEPIPELINE`.
+
+```bash
 python3 -m json.tool templates/lab-12-codebuild-update.json > /dev/null && echo "valid JSON"
 grep -c '\$' templates/lab-12-codebuild-update.json
 
@@ -442,21 +601,33 @@ aws codebuild update-project \
   --query 'project.environment.{Privileged:privilegedMode,Vars:environmentVariables[].name}' \
   --output json
 ```
-![24](../../screenshots/lab12/24.png)
-Verify
 
-```bash 
+![Step 13: Privileged mode on, IMAGE_REPO_URI added](../../screenshots/lab12/24.png)
+
+**Verify:** the source type must still be `CODEPIPELINE`.
+
+```bash
 aws codebuild batch-get-projects --names usms-enrolment-build \
   --query 'projects[0].{Source:source.type,Role:serviceRole,Privileged:environment.privilegedMode,Repo:environment.environmentVariables[?name==`IMAGE_REPO_URI`].value|[0]}' \
   --output table
 ```
-![25](../../screenshots/lab12/25.png)
 
-Step 14 - Extend the buildspec: build the image, write imagedefinitions.json¶
+![Step 13 verify: Project configuration](../../screenshots/lab12/25.png)
 
-Command - part 1, the new buildspec
+### Step 14: Extend the buildspec to build the image and write `imagedefinitions.json`
 
-```bash 
+**Part 1: the new buildspec.** The Lab 11 version is kept as `buildspec.yml.lab08a`.
+
+| Phase | New behaviour |
+|---|---|
+| `install` | Reports whether a Docker client is available |
+| `pre_build` | Logs in to ECR if a Docker daemon is reachable |
+| `build` | Builds and pushes `${IMAGE_REPO_URI}:<release>`, then writes `imagedefinitions.json` |
+| `post_build` | Runs the smoke tests and prints `imagedefinitions.json` |
+
+The buildspec still works without Docker. In that case it skips the image build, and the image for that release tag must already exist in ECR.
+
+```bash
 cd ~/aws-floci-course/labs/lab-11-cicd/app
 
 cp buildspec.yml buildspec.yml.lab08a
@@ -556,11 +727,12 @@ BUILDSPEC
 
 echo "buildspec rewritten; the Lab 11 version is kept at buildspec.yml.lab08a"
 ```
-![26](../../screenshots/lab12/26.png)
 
-Command - part 2, the eighth smoke test
+![Step 14: buildspec rewritten](../../screenshots/lab12/26.png)
 
-```bash 
+**Part 2: add an eighth smoke test.** It checks that `imagedefinitions.json` is a one-element array that names `enrolment-api`. The script does nothing if the test is already there.
+
+```bash
 python3 - << 'PY'
 path = "tests/smoke.sh"
 src = open(path).read()
@@ -579,18 +751,20 @@ PY
 
 bash -n tests/smoke.sh && echo "smoke.sh syntax OK"
 ```
-![27](../../screenshots/lab12/27.png)
 
-Verify - run it locally first
+![Step 14: Eighth smoke test added](../../screenshots/lab12/27.png)
 
-```bash 
+**Verify:** run the new buildspec locally before you ship it.
+
+```bash
 cd ~/aws-floci-course
 
 IMAGE_REPO_URI="$ECR_URI" ./scripts/utilities/usms-buildspec-run.sh labs/lab-11-cicd/app | tail -25
 ```
-![28](../../screenshots/lab12/28.png)
 
-Command - part 3, ship it
+![Step 14 verify: Local run passes all eight smoke tests](../../screenshots/lab12/28.png)
+
+**Part 3: ship it.** Upload the new source. The pipeline is not started until Step 17.
 
 ```bash
 ./scripts/utilities/usms-pack-source.sh labs/lab-11-cicd/app outputs/usms-enrolment-src.zip | tail -3
@@ -602,11 +776,26 @@ aws s3api put-object \
   --query 'VersionId' --output text
 ```
 
-![29](../../screenshots/lab12/29.png)
+![Step 14: New source uploaded](../../screenshots/lab12/29.png)
 
-Step 15 - Version 2 of USMSCodePipelineBase¶
+---
 
-```bash 
+## Part E: Add the Deploy Stage
+
+### Step 15: Create version 2 of `USMSCodePipelineBase`
+
+To deploy, the pipeline has to update the service, register task definitions, and pass the two ECS roles to ECS. Every new permission is scoped as narrowly as AWS allows.
+
+| Sid | Change from v1 | Scope |
+|---|---|---|
+| `ReadAndWriteTheArtifactStore` | Unchanged | Artifact bucket only |
+| `StartAndWatchTheEnrolmentBuildOnly` | Unchanged | One build project |
+| `PassTheBuildRoleAndOnlyToCodeBuild` | Unchanged | Build role, only to `codebuild.amazonaws.com` |
+| `DeployToTheEnrolmentServiceOnly` | **New** | One ECS service |
+| `ReadAndRegisterTaskDefinitions` | **New** | `*` (these actions cannot be scoped to a resource) |
+| `PassTheTwoEcsRolesAndOnlyToEcsTasks` | **New** | Exec and task roles, only to `ecs-tasks.amazonaws.com` |
+
+```bash
 cd ~/aws-floci-course
 
 cat > policies/usms-codepipeline-policy-v2.json << 'EOF'
@@ -691,11 +880,12 @@ aws iam create-policy-version \
   --query 'PolicyVersion.{Version:VersionId,Default:IsDefaultVersion}' \
   --output table
 ```
-![30](../../screenshots/lab12/30.png)
 
-Verify
+![Step 15: USMSCodePipelineBase v2 created as default](../../screenshots/lab12/30.png)
 
-```bash 
+**Verify**
+
+```bash
 aws iam get-policy-version \
   --policy-arn arn:aws:iam::000000000000:policy/USMSCodePipelineBase \
   --version-id v2 \
@@ -704,12 +894,15 @@ aws iam get-policy-version \
 aws iam get-policy --policy-arn arn:aws:iam::000000000000:policy/USMSCodePipelineBase \
   --query 'Policy.DefaultVersionId' --output text
 ```
-![31](../../screenshots/lab12/31.png)
 
+![Step 15 verify: Six statements, default is v2](../../screenshots/lab12/31.png)
 
-Step 16 - Add the Deploy stage¶
+### Step 16: Add the Deploy stage
 
-Command - part 1, read the current document
+!!! warning "Read before running update-pipeline"
+    `update-pipeline` **replaces** the entire pipeline with the document you send. Always start from the pipeline's current document, add to it, and send it back. If you send a document that only contains the new stage, the pipeline loses its Source and Build stages.
+
+**Part 1: read the current document**
 
 ```bash
 aws codepipeline get-pipeline --name usms-enrolment-pipeline \
@@ -724,9 +917,10 @@ print('name  :', p['name'])
 print('stages:', [s['name'] for s in p['stages']])
 "
 ```
-![32](../../screenshots/lab12/32.png)
 
-Command - part 2, the surgery
+![Step 16: Current pipeline has Source and Build](../../screenshots/lab12/32.png)
+
+**Part 2: append the Deploy stage.** The script stops if the stages are not what it expects, or if a Deploy stage already exists.
 
 ```bash
 python3 - << 'PY'
@@ -776,9 +970,10 @@ PY
 python3 -m json.tool templates/lab-12-pipeline.json > /dev/null && echo "valid JSON"
 grep -c '\$' templates/lab-12-pipeline.json
 ```
-![33](../../screenshots/lab12/33.png)
 
-Command - part 3, put it back
+![Step 16: Deploy stage appended](../../screenshots/lab12/33.png)
+
+**Part 3: send it back**
 
 ```bash
 aws codepipeline update-pipeline \
@@ -786,22 +981,24 @@ aws codepipeline update-pipeline \
   --query 'pipeline.{Name:name,Stages:length(stages),Version:version}' \
   --output table
 ```
-![34](../../screenshots/lab12/34.png)
 
+![Step 16: Pipeline updated to 3 stages](../../screenshots/lab12/34.png)
 
-Verify
+**Verify**
 
 ```bash
 aws codepipeline get-pipeline --name usms-enrolment-pipeline \
   --query 'pipeline.stages[].{Stage:name,Action:actions[0].name,Provider:actions[0].actionTypeId.provider,Input:actions[0].inputArtifacts[0].name}' \
   --output table
 ```
-![35](../../screenshots/lab12/35.png)
 
-Step 17 - Run it end to end, and prove the service moved¶
-Change a version number and have a running service change with no human typing aws ecs update-service. A green Deploy stage is a report; the evidence is that the service's revision increased and that the new revision's image is the one the build produced. Check both.
+![Step 16 verify: Source → Build → Deploy](../../screenshots/lab12/35.png)
 
-Command - part 1, record the before
+### Step 17: Run the pipeline end to end and prove the service moved
+
+The goal is to change a version number and see the running service change without anyone typing `aws ecs update-service`. A green Deploy stage is only a status report. The evidence is that the service's task definition revision went up, and that the new revision uses the image the build produced. Check both.
+
+**Part 1: record the starting revision**
 
 ```bash
 BEFORE_TD=$(aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" \
@@ -809,15 +1006,15 @@ BEFORE_TD=$(aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" \
   --query 'services[0].taskDefinition' --output text)
 echo "before: $BEFORE_TD"
 ```
-![36](../../screenshots/lab12/36.png)
 
+!!! check "Expected result"
+    `.../usms-enrolment:3` from Step 11. The proof is a before-and-after comparison, so keep this value.
 
+![Step 17: Revision before the run](../../screenshots/lab12/36.png)
 
-What to look for: .../usms-enrolment:3 from Step 11. The proof is a comparison; keep both halves.
+**Part 2: bump the release and run**
 
-Command - part 2, perturb and run
-
-```bash 
+```bash
 printf 'r7\n' > labs/lab-11-cicd/app/VERSION
 
 ./scripts/utilities/usms-pack-source.sh labs/lab-11-cicd/app outputs/usms-enrolment-src.zip >/dev/null
@@ -841,9 +1038,10 @@ for i in $(seq 1 40); do
   sleep 10
 done
 ```
-![37](../../screenshots/lab12/37.png)
 
-Command - part 3, read back the three proofs
+![Step 17: All three stages succeeded](../../screenshots/lab12/37.png)
+
+**Part 3: read back the evidence and save it**
 
 ```bash
 AFTER_TD=$(aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" \
@@ -860,11 +1058,19 @@ AFTER_IMAGE=$(aws ecs describe-task-definition --task-definition "$AFTER_TD" \
   printf 'recorded at    : %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } | tee outputs/lab-12-deploy-evidence.txt
 ```
-![38](../../screenshots/lab12/38.png)
 
-Step 18 - The rollback drill¶
+!!! check "Expected result"
+    The revision after the run is higher than the revision before it, and the image ends in `:r7`.
 
-Command - part 1, deploy a release whose image was never pushed
+![Step 17: Revision increased, image is r7](../../screenshots/lab12/38.png)
+
+---
+
+## Part F: Rollback and Blue/Green
+
+### Step 18: The rollback drill
+
+**Part 1: deploy a release whose image was never pushed**
 
 ```bash
 cd ~/aws-floci-course
@@ -879,11 +1085,16 @@ aws s3api put-object --bucket usms-pipeline-artifacts \
 aws ecr describe-images --repository-name usms-enrolment \
   --query 'imageDetails[].imageTags[]' --output text
 ```
-![39](../../screenshots/lab12/39.png)
 
+!!! check "Expected result"
+    `r6` and `r7` are listed, but not `r8`.
 
+!!! tip
+    If your build can push images, it will push `r8` and the drill will not fail. To prevent that, temporarily point the project's `IMAGE_REPO_URI` at a repository that does not exist, or stop Docker. The drill needs a deployment whose image cannot be pulled.
 
-What to look for: r6 and r7, no r8. If your build can push, temporarily point the project's IMAGE_REPO_URI at a nonexistent repository or stop Docker; the point is a deploy whose image cannot be pulled.
+![Step 18: ECR has r6 and r7 only](../../screenshots/lab12/39.png)
+
+**Record the last good revision, then start the pipeline**
 
 ```bash
 BEFORE_ROLLBACK=$(aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" \
@@ -893,10 +1104,10 @@ echo "good revision, remember this: $BEFORE_ROLLBACK"
 aws codepipeline start-pipeline-execution --name usms-enrolment-pipeline \
   --query 'pipelineExecutionId' --output text
 ```
-![40](../../screenshots/lab12/40.png)
 
+![Step 18: Good revision recorded, bad release started](../../screenshots/lab12/40.png)
 
-Command - part 2, watch it fail
+**Part 2: watch it fail**
 
 ```bash
 sleep 30
@@ -908,11 +1119,12 @@ aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" --services "$USMS_ENROLM
 aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" --services "$USMS_ENROLMENT_SERVICE" \
   --query 'services[0].events[0:5].[createdAt,message]' --output text
 ```
-![41](../../screenshots/lab12/41.png)
 
-Command - part 3, roll back by hand
+![Step 18: Failing deployment and service events](../../screenshots/lab12/41.png)
 
-```bash 
+**Part 3: roll back by hand**
+
+```bash
 aws ecs update-service \
   --cluster "$USMS_ECS_CLUSTER" \
   --service "$USMS_ENROLMENT_SERVICE" \
@@ -925,7 +1137,10 @@ aws ecs update-service \
 aws ecs describe-services --cluster "$USMS_ECS_CLUSTER" --services "$USMS_ENROLMENT_SERVICE" \
   --query 'services[0].taskDefinition' --output text
 ```
-![42](../../screenshots/lab12/42.png)
+
+![Step 18: Service rolled back to the good revision](../../screenshots/lab12/42.png)
+
+**Part 4: put the source back to the last good release.** This stops the next pipeline run from deploying `r8` again.
 
 ```bash
 printf 'r7\n' > labs/lab-11-cicd/app/VERSION
@@ -934,11 +1149,14 @@ aws s3api put-object --bucket usms-pipeline-artifacts \
   --key source/usms-enrolment-src.zip --body outputs/usms-enrolment-src.zip \
   --query 'VersionId' --output text
 ```
-![43](../../screenshots/lab12/43.png)
 
-Step 19 - Blue/green with CodeDeploy, on paper¶
+![Step 18: Source restored to r7](../../screenshots/lab12/43.png)
 
-```bash 
+### Step 19: Blue/green with CodeDeploy, on paper
+
+Floci does not run CodeDeploy, so in this step you only check the two blue/green documents without applying them. `templates/lab-12-codedeploy-deployment-group.json` defines the deployment group. `templates/lab-12-appspec.yaml` tells CodeDeploy which container and port the load balancer should route to.
+
+```bash
 python3 -m json.tool templates/lab-12-codedeploy-deployment-group.json > /dev/null \
   && echo "deployment group document is valid JSON"
 
@@ -954,9 +1172,17 @@ else:
           "port:", svc["LoadBalancerInfo"]["ContainerPort"])
 PY
 ```
-![44](../../screenshots/lab12/44.png)
 
-Step 20 - Record this lab's outputs¶
+![Step 19: Deployment group and appspec validated](../../screenshots/lab12/44.png)
+
+---
+
+## Part G: Record and Commit
+
+### Step 20: Record this lab's outputs
+
+`configs/lab-12.env` stores names, ARNs, tags and digests only, with **no secrets**. Each value is read live from the emulator, and a placeholder such as `not-created` is written if the value is missing. The heredoc is **unquoted** (`<< EOF`) so the `$(...)` lookups run when the file is written.
+
 ```bash
 cd ~/aws-floci-course
 
@@ -1024,9 +1250,10 @@ EOF
 grep -n 'export .*=$\|None' configs/lab-12.env || echo "all values populated"
 grep -c '^export' configs/lab-12.env
 ```
-![45](../../screenshots/lab12/45.png)
 
-Verify
+![Step 20: lab-12.env written and fully populated](../../screenshots/lab12/45.png)
+
+**Verify**
 
 ```bash
 source configs/lab-12.env
@@ -1035,14 +1262,226 @@ printf 'repo=%s\ntag=%s\ndigest=%s\nsvc-taskdef=%s\nstages=%s\ncb=%s cp=%s\npath
   "$USMS_PIPELINE_STAGES" "$USMS_POLICY_CODEBUILD_VERSION" "$USMS_POLICY_CODEPIPELINE_VERSION" \
   "$USMS_CICD_DEPLOY_PATH"
 ```
-![46](../../screenshots/lab12/46.png)
 
-Step 21 - Commit¶
+![Step 20 verify: Recorded values](../../screenshots/lab12/46.png)
 
+### Step 21: Commit
 
+Stage this lab's files and commit. `outputs/` must not be committed.
 
+```bash
+git add labs/lab-11-cicd docker-compose.yml
+git add policies templates scripts/utilities configs/lab-12.env
+git status --short
+git commit -m "Lab 12: deploy to ECS from the pipeline"
+```
 
+![Step 21: Lab 12 committed](../../screenshots/lab12/47.png)
 
+---
 
+## Verification
 
+### Build `scripts/utilities/verify-lab-12.sh`
 
+The script checks the environment first, then works through each part of the lab.
+
+| Path | Expected result |
+|---|---|
+| **A**: everything supported | `PASS=45  FAIL=0` |
+| **B**: no usable ECR | `PASS=40  FAIL=5` (the five ECR checks) |
+| **C**: no CodeBuild/CodePipeline either | `PASS=31  FAIL=14` |
+
+```bash
+cat > scripts/utilities/verify-lab-12.sh << 'EOF'
+#!/usr/bin/env bash
+# Verify every Lab 12 artefact. Exit 1 if anything is missing.
+# EXPECTED: PASS=45  FAIL=0        (Path A)
+#           PASS=40  FAIL=5        (Path B  - no usable ECR: the five ECR checks)
+#           PASS=31  FAIL=14       (Path C  - no CodeBuild/CodePipeline either: those
+#                                   five plus two dependency checks, three project
+#                                   checks and four pipeline checks)
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/course.env"
+for f in configs/lab-01.env configs/lab-04.env configs/lab-05.env \
+         configs/lab-11.env configs/lab-12.env; do
+  # shellcheck disable=SC1090
+  [ -f "$f" ] && source "$f"
+done
+
+: "${FLOCI_CONTAINER_NAME:=floci}"
+: "${USMS_ECS_CLUSTER:=usms-ecs-cluster}"
+: "${USMS_ENROLMENT_SERVICE:=usms-enrolment-svc}"
+: "${USMS_PIPELINE_NAME:=usms-enrolment-pipeline}"
+: "${USMS_BUILD_PROJECT:=usms-enrolment-build}"
+: "${USMS_ECR_REPO:=usms-enrolment}"
+: "${USMS_TASK_FAMILY:=usms-enrolment}"
+
+PASS=0; FAIL=0
+check() {
+  if eval "$2" >/dev/null 2>&1; then printf "  ok   %s\n" "$1"; PASS=$((PASS+1))
+  else printf "  FAIL %s\n" "$1"; FAIL=$((FAIL+1)); fi
+}
+ecr()  { aws ecr describe-repositories --repository-names "$USMS_ECR_REPO" --query "repositories[0].$1" --output text; }
+proj() { aws codebuild batch-get-projects --names "$USMS_BUILD_PROJECT" --query "projects[0].$1" --output text; }
+pipe() { aws codepipeline get-pipeline --name "$USMS_PIPELINE_NAME" --query "pipeline.$1" --output text; }
+tdef() { aws ecs describe-task-definition --task-definition "$USMS_TASK_FAMILY" --query "taskDefinition.$1" --output text; }
+polv() { aws iam get-policy --policy-arn "arn:aws:iam::000000000000:policy/$1" --query 'Policy.DefaultVersionId' --output text; }
+spec="labs/lab-11-cicd/app/buildspec.yml"
+
+echo "== Environment =="
+check "Floci container running" \
+  "test \"\$(docker container inspect $FLOCI_CONTAINER_NAME --format '{{.State.Running}}')\" = true"
+check "storage mode is NOT memory" \
+  "docker container inspect $FLOCI_CONTAINER_NAME --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -qE '^FLOCI_STORAGE_MODE=(hybrid|persistent|wal)$'"
+check "AWS CLI reaches Floci" "aws sts get-caller-identity"
+check "account is 000000000000" \
+  "test \"\$(aws sts get-caller-identity --query Account --output text)\" = 000000000000"
+
+echo "== Lab 11 dependencies =="
+check "configs/lab-11.env present"   "test -f configs/lab-11.env"
+check "pipeline $USMS_PIPELINE_NAME exists" "pipe name | grep -q $USMS_PIPELINE_NAME"
+check "build project exists"          "proj name | grep -q $USMS_BUILD_PROJECT"
+check "ECS service exists" \
+  "aws ecs describe-services --cluster $USMS_ECS_CLUSTER --services $USMS_ENROLMENT_SERVICE --query 'services[0].status' --output text | grep -q ACTIVE"
+
+echo "== ECR =="
+check "repository $USMS_ECR_REPO exists"   "ecr repositoryName | grep -q $USMS_ECR_REPO"
+check "scanOnPush is true"                 "ecr imageScanningConfiguration.scanOnPush | grep -qi true"
+check "repositoryUri has a registry host"  "ecr repositoryUri | grep -q '/'"
+check "at least one image is present" \
+  "test \"\$(aws ecr describe-images --repository-name $USMS_ECR_REPO --query 'length(imageDetails)' --output text)\" -ge 1"
+check "tag r7 is present" \
+  "aws ecr describe-images --repository-name $USMS_ECR_REPO --image-ids imageTag=r7 --query 'imageDetails[0].imageDigest' --output text | grep -q '^sha256:'"
+
+echo "== Source tree =="
+check "Dockerfile present"                 "test -f labs/lab-11-cicd/app/Dockerfile"
+check ".dockerignore present"              "test -f labs/lab-11-cicd/app/.dockerignore"
+check "buildspec builds an image"          "grep -q 'docker build' $spec"
+check "buildspec writes imagedefinitions"  "grep -q 'imagedefinitions.json' $spec"
+check "smoke.sh has 8 assertions"          "test \"\$(grep -cE '^t \"' labs/lab-11-cicd/app/tests/smoke.sh)\" = 8"
+
+echo "== Task definition and service =="
+check "task family revision is at least 3" "test \"\$(tdef revision)\" -ge 3"
+check "task definition names the ECR repo" "tdef 'containerDefinitions[0].image' | grep -q $USMS_ECR_REPO"
+check "cpu is still 256"                   "test \"\$(tdef cpu)\" = 256"
+check "memory is still 1024"               "test \"\$(tdef memory)\" = 1024"
+
+echo "== IAM policy versions =="
+check "USMSCodeBuildBase default is v2"       "test \"\$(polv USMSCodeBuildBase)\" = v2"
+check "codebuild v2 grants ecr:PutImage"      "grep -q 'ecr:PutImage' policies/usms-codebuild-policy-v2.json"
+check "GetAuthorizationToken is on Resource *" \
+  "python3 -c \"import json;d=json.load(open('policies/usms-codebuild-policy-v2.json'));import sys;sys.exit(0 if any(s.get('Action')=='ecr:GetAuthorizationToken' and s.get('Resource')=='*' for s in d['Statement']) else 1)\""
+check "USMSCodePipelineBase default is v2"    "test \"\$(polv USMSCodePipelineBase)\" = v2"
+check "pipeline v2 grants ecs:UpdateService"  "grep -q 'ecs:UpdateService' policies/usms-codepipeline-policy-v2.json"
+check "pipeline v2 passes roles to ecs-tasks" "grep -q 'ecs-tasks.amazonaws.com' policies/usms-codepipeline-policy-v2.json"
+
+echo "== CodeBuild project =="
+check "privilegedMode is true"     "proj environment.privilegedMode | grep -qi true"
+check "IMAGE_REPO_URI is set" \
+  "proj 'environment.environmentVariables[?name==\`IMAGE_REPO_URI\`].value | [0]' | grep -q ."
+check "source type is still CODEPIPELINE" "proj source.type | grep -q CODEPIPELINE"
+
+echo "== Pipeline =="
+check "pipeline has 3 stages"              "test \"\$(pipe 'length(stages)')\" = 3"
+check "stage 3 is named Deploy"            "pipe 'stages[2].name' | grep -q '^Deploy$'"
+check "deploy provider is ECS"             "pipe 'stages[2].actions[0].actionTypeId.provider' | grep -q '^ECS$'"
+check "deploy reads imagedefinitions.json" "pipe 'stages[2].actions[0].configuration.FileName' | grep -q imagedefinitions.json"
+
+echo "== Conceptual documents and helpers =="
+check "appspec.yaml present"               "test -f templates/lab-12-appspec.yaml"
+check "deployment group document is valid JSON" \
+  "python3 -m json.tool templates/lab-12-codedeploy-deployment-group.json"
+check "usms-ecs-watch.sh executable and valid" \
+  "test -x scripts/utilities/usms-ecs-watch.sh && bash -n scripts/utilities/usms-ecs-watch.sh"
+
+echo "== Files and Git hygiene =="
+check "configs/lab-12.env present"        "test -f configs/lab-12.env"
+check "no empty or None values in lab-12.env" "! grep -qE 'export [A-Z_]+=$|=None$' configs/lab-12.env"
+check "taskdef v3 template is valid JSON"  "python3 -m json.tool templates/lab-12-taskdef-v3.json"
+check "pipeline template is valid JSON"    "python3 -m json.tool templates/lab-12-pipeline.json"
+check "lab-12 templates have no unexpanded variables" \
+  "! grep -q '[\$]' templates/lab-12-taskdef-v3.json templates/lab-12-codebuild-update.json templates/lab-12-pipeline.json"
+check "both v2 policy documents are valid JSON" \
+  "python3 -m json.tool policies/usms-codebuild-policy-v2.json && python3 -m json.tool policies/usms-codepipeline-policy-v2.json"
+check "no secret is tracked"               "! git ls-files | grep -q '^outputs/'"
+
+echo; echo "PASS=$PASS  FAIL=$FAIL"
+if [ "$FAIL" -ne 0 ]; then
+  cat <<'REMEDY'
+
+Read the failures top-down, not bottom-up.
+
+  Environment block failing   -> Floci is not running, or is in memory mode. Fix first.
+  Lab 11 dependencies        -> re-run verify-lab-11.sh before anything else.
+  ECR block                   -> Path B: expected, 5 failures. Otherwise Steps 4, 5, 8.
+  Source tree                 -> Steps 7 and 14.
+  Task definition             -> Steps 10 and 11. A revision below 3 means Step 10 did not register.
+  IAM policy versions         -> Steps 12 and 15. "default is v2" failing usually means
+                                 create-policy-version ran without --set-as-default.
+  CodeBuild project           -> Step 13. "source type CODEPIPELINE" failing means an
+                                 over-broad update-project undid Lab 11 Step 18.
+  Pipeline                    -> Step 16. Fewer than 3 stages after update-pipeline means
+                                 the document sent was incomplete. Rebuild it from
+                                 templates/lab-11-pipeline.json plus the Deploy stage.
+  Hygiene                     -> Steps 20 and 21.
+REMEDY
+fi
+[ "$FAIL" -eq 0 ]
+EOF
+
+chmod +x scripts/utilities/verify-lab-12.sh
+bash -n scripts/utilities/verify-lab-12.sh && echo "syntax OK"
+./scripts/utilities/verify-lab-12.sh
+```
+
+![Verification: verify-lab-12.sh results](../../screenshots/lab12/48.png)
+
+### Reading the results
+
+Read failures from the top down. A failure in an earlier block often causes the failures below it.
+
+| Failing block | Where to look |
+|---|---|
+| Environment | Floci is not running, or is in memory mode. Fix this first. |
+| Lab 11 dependencies | Re-run `verify-lab-11.sh` before anything else. |
+| ECR | On Path B, five failures here are expected. Otherwise Steps 4, 5 and 8. |
+| Source tree | Steps 7 and 14. |
+| Task definition | Steps 10 and 11. A revision below 3 means Step 10 did not register. |
+| IAM policy versions | Steps 12 and 15. Usually `--set-as-default` was left off. |
+| CodeBuild project | Step 13. If the source type is no longer `CODEPIPELINE`, an update changed more than the `environment` block. |
+| Pipeline | Step 16. Fewer than 3 stages means an incomplete document was sent to `update-pipeline`. |
+| Hygiene | Steps 20 and 21. |
+
+---
+
+## Cleanup
+
+Build the end-of-course cleanup script and check its syntax now, but **do not run it** until the end of the course, because later labs depend on these resources.
+
+```bash
+chmod +x scripts/cleanup/lab-12-cleanup.sh
+bash -n scripts/cleanup/lab-12-cleanup.sh && echo "syntax OK - do NOT run it"
+```
+
+![Cleanup: Script syntax OK, not executed](../../screenshots/lab12/49.png)
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| `docker push` hangs or is refused | Ports `5100-5104` are not published. Repeat Step 4 and restart Floci. |
+| `docker login` fails | `ECR_REGISTRY` is empty. Repeat the Step 5 verify block in the same shell. |
+| `register-task-definition` rejects the input | Read-only fields are still in the JSON. Re-run the Step 10 Python script. |
+| Watcher never prints "settled" | Floci may not run real tasks. Check that the service's `taskDefinition` changed. |
+| Build stage fails with `AccessDenied` on ECR | `USMSCodeBuildBase` v2 is not the default version. Repeat Step 12 with `--set-as-default`. |
+| Deploy stage fails with `AccessDenied` on `iam:PassRole` | `USMSCodePipelineBase` v2 is missing or not the default. Repeat Step 15. |
+| Pipeline has only one stage after Step 16 | The document sent to `update-pipeline` contained only the Deploy stage. Rebuild it from the current pipeline plus the Deploy stage. |
+| Rollback drill succeeds instead of failing | The build pushed `r8`. Follow the tip in Step 18. |
+| Pipeline deploys `r8` again later | You skipped Step 18 Part 4. Restore `VERSION` to `r7` and upload the source again. |
