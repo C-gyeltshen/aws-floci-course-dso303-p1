@@ -1,35 +1,136 @@
-# Lab 13 - Centralized Logging and Monitoring with CloudWatch and X-Ray
+# Lab 13: Centralized Logging and Monitoring with CloudWatch and X-Ray
 
-## Preewqusite
+> **Project:** USMS (University Student Management System) · **Emulator:** Floci · **Account:** `000000000000` · **Region:** `us-east-1`
+
+So far the USMS services write logs, but nothing collects them in one place or alerts anyone when something goes wrong. In this lab you build the three observability signals for the transcript pipeline:
+
+- **Logs:** a central log group, retention policies, and metric filters
+- **Metrics:** custom metrics with dimensions, alarms, and a dashboard
+- **Traces:** an instrumented Lambda with active X-Ray tracing, hand-built segments, and a sampling rule
+
+You check every signal by reading it back, and finally restart Floci to confirm that everything persists.
+
+---
+
+## Contents
+
+1. [Architecture](#architecture)
+2. [Learning Objectives](#learning-objectives)
+3. [Prerequisites](#prerequisites)
+4. [Resources Created and Changed](#resources-created-and-changed)
+5. [Part A: Environment and Discovery](#part-a-environment-and-discovery) (Steps 1–5)
+6. [Part B: Logs](#part-b-logs) (Steps 6–10)
+7. [Part C: Custom Metrics and Permissions](#part-c-custom-metrics-and-permissions) (Steps 11–12)
+8. [Part D: Instrumentation and Tracing](#part-d-instrumentation-and-tracing) (Steps 13–18)
+9. [Part E: Alarms](#part-e-alarms) (Steps 19–21)
+10. [Part F: Dashboard and Log Queries](#part-f-dashboard-and-log-queries) (Steps 22–23)
+11. [Part G: Persistence, Record and Commit](#part-g-persistence-record-and-commit) (Steps 24–26)
+12. [Verification](#verification)
+13. [Cleanup](#cleanup)
+14. [Troubleshooting](#troubleshooting)
+
+---
+
+## Architecture
+
+```
+                    ┌──────────────────────────────────────────────┐
+  S3 put / invoke ─▶│  usms-transcript-notifier  (alias: live)     │
+                    │  instrumented handler, tracing = Active      │
+                    └──────┬──────────────────┬──────────────┬─────┘
+                           │ logs             │ metrics      │ traces
+                           ▼                  ▼              ▼
+  /aws/lambda/usms-transcript-notifier   USMS/Application   X-Ray
+           │ metric filter                 namespace        segments + subsegments
+           │ usms-notify-count ──────────▶ NotifyCount      sampling rule
+                                           TranscriptsProcessed
+  /usms/central/application                TranscriptLagSeconds
+           │ metric filter                 EdgeDenyCount
+           │ usms-central-errors ────────▶ CentralErrorCount
+           ▼                                   │
+     Logs Insights / filter-log-events         ▼
+                                   ┌───────────────────────────┐
+                                   │ usms-transcript-lag-high  │─┐
+                                   │ usms-notify-silence       │─┼─▶ usms-transcript-pipeline-down
+                                   └───────────────────────────┘ │      (composite alarm)
+                                                                 ▼
+                                                     usms-overview dashboard
+```
+
+---
+
+## Learning Objectives
+
+By the end of this lab you will be able to:
+
+- Find out which CloudWatch and X-Ray features your emulator supports, and record the result
+- Create a central log group and set retention on every USMS log group
+- Write log events with correctly formatted timestamps, and test filter patterns before deploying them
+- Turn log lines into metrics with metric filters, and confirm the metric appears end to end
+- Publish custom metrics with dimensions, and explain why the dimensioned and total series are separate
+- Grant a scoped observability policy to the Lambda and EC2 roles
+- Instrument a Lambda, publish versions, and move an alias between them
+- Build X-Ray segments and subsegments, search by annotation, and read a service graph
+- Create a threshold alarm, an absence alarm, and a composite alarm, and prove they work
+- Build a dashboard and query logs with Logs Insights, or without it if it is unsupported
+
+---
+
+## Prerequisites
+
+Floci must be in a persistent storage mode, and Lab 10 must pass verification.
 
 ```bash
 ./scripts/utilities/floci-storage-check.sh
 ./scripts/utilities/verify-lab-10.sh | tail -2
 ```
-![1](../../screenshots/lab13/1.png)
 
-## directory structure 
+![Prerequisites: storage mode checked, Lab 10 passes](../../screenshots/lab13/1.png)
+
+**Prepare the directory layout**
 
 ```bash
 cd ~/aws-floci-course
 mkdir -p labs/lab-13-cloudwatch-xray/transcript-notifier-v2 project/checkpoint-01
 ls -d labs/*
 ```
-![2](../../screenshots/lab13/2.png)
 
-## 7. Step-by-Step Implementation¶
+![Prerequisites: lab directories listed](../../screenshots/lab13/2.png)
 
-Step 1 - Start the environment and prove a new terminal can find it¶
+---
 
-```bash 
+## Resources Created and Changed
+
+| Type | Name | Notes |
+|---|---|---|
+| Log group | `/usms/central/application` | Created, 30-day retention |
+| Log groups | `/usms/ecs/enrolment`, `/aws/lambda/usms-*` | Retention set (30 or 14 days) |
+| Metric filter | `usms-notify-count` | Notifier log group → `NotifyCount` |
+| Metric filter | `usms-central-errors` | Central log group → `CentralErrorCount` |
+| Custom metrics | `TranscriptsProcessed`, `TranscriptLagSeconds`, `EdgeDenyCount` | Namespace `USMS/Application` |
+| IAM policy | `USMSObservabilityWrite` | Attached to `usms-lambda-exec-role` and `usms-ec2-app-role` |
+| Lambda | `usms-transcript-notifier` | Two new versions; alias `live` moved; tracing `Active` |
+| X-Ray sampling rule | `usms-transcripts-sampling` | 10% fixed rate, reservoir of 2 |
+| Metric alarms | `usms-transcript-lag-high`, `usms-notify-silence` | Threshold and absence alarms |
+| Composite alarm | `usms-transcript-pipeline-down` | Not supported by Floci |
+| Dashboard | `usms-overview` | 5 widgets |
+
+---
+
+## Part A: Environment and Discovery
+
+### Step 1: Start the environment and confirm a new terminal can find it
+
+```bash
 ./scripts/setup/floci-up.sh
 ./scripts/utilities/floci-storage-check.sh
 ```
-![3](../../screenshots/lab13/3.png)
 
+![Step 1: Floci running in persistent storage mode](../../screenshots/lab13/3.png)
 
-Step 2 - Source every lab environment file that exists, and confirm your identity¶
-Source whatever env files are present and report what was found, rather than assuming every earlier file exists.
+### Step 2: Source every lab environment file that exists, and confirm your identity
+
+Source whichever env files are present and report what was found, instead of assuming every earlier file exists.
 
 ```bash
 source configs/course.env
@@ -48,12 +149,10 @@ done
 
 ./scripts/utilities/whoami.sh
 ```
-![4](../../screenshots/lab13/4.png)
 
+![Step 2: Environment files sourced](../../screenshots/lab13/4.png)
 
-
-
-Verify
+**Verify:** none of these values should print `<UNSET>`.
 
 ```bash
 printf 'bucket       : %s\n' "${USMS_BUCKET_NAME:-<UNSET>}"
@@ -62,12 +161,12 @@ printf 'notifier log : %s\n' "${USMS_LOG_GROUP_NOTIFIER:-<UNSET>}"
 printf 'lambda role  : %s\n' "${USMS_ROLE_LAMBDA:-<UNSET>}"
 printf 'account id   : %s\n' "${USMS_ACCOUNT_ID:-<UNSET>}"
 ```
-![5](../../screenshots/lab13/5.png)
 
+![Step 2 verify: Values from earlier labs](../../screenshots/lab13/5.png)
 
+### Step 3: Create this lab's directories and confirm the repository layout
 
-Step 3 - Create this lab's directories and confirm the repository shape¶
-One directory for the instrumented handler, one for the project checkpoint, so no later step fails on a missing parent.
+Create one directory for the instrumented handler and one for the project checkpoint, so no later step fails on a missing parent directory.
 
 ```bash
 mkdir -p labs/lab-13-cloudwatch-xray/transcript-notifier-v2 \
@@ -75,19 +174,20 @@ mkdir -p labs/lab-13-cloudwatch-xray/transcript-notifier-v2 \
 
 ls -d labs/lab-13-cloudwatch-xray/*/ project/*/
 ```
-![6](../../screenshots/lab13/6.png)
 
+![Step 3: Directories created](../../screenshots/lab13/6.png)
 
-
-Verify
+**Verify**
 
 ```bash
 test -d labs/lab-13-cloudwatch-xray/transcript-notifier-v2 && echo "source tree ready"
 ```
-![7](../../screenshots/lab13/7.png)
 
-Step 4 - Find out what this Floci build actually supports¶
-Logs are usually good, metrics and alarms are stored but not evaluated, Logs Insights is often absent, and X-Ray varies most. Establish which you have, in writing, before depending on it.
+![Step 3 verify: Source tree ready](../../screenshots/lab13/7.png)
+
+### Step 4: Find out what this Floci build supports
+
+Emulators support these services unevenly. Logs usually work. Metrics and alarms are stored but not evaluated. Logs Insights is often missing, and X-Ray support varies the most. Record what your build supports before you depend on it.
 
 ```bash
 probe() {  
@@ -111,10 +211,15 @@ probe() {
   probe "lambda     (get-function-config)"    "aws lambda get-function-configuration --function-name ${USMS_LAMBDA_NOTIFIER_FN:-usms-transcript-notifier}"
 } | tee outputs/lab-13-support-probe.txt
 ```
-![8](../../screenshots/lab13/8.png)
 
+![Step 4: Support probe results](../../screenshots/lab13/8.png)
 
-Step 5 - Inventory the monitoring you already have and did not know about¶
+!!! note
+    Keep `outputs/lab-13-support-probe.txt`. Step 23 uses the Logs Insights result to choose between Path A and Path B.
+
+### Step 5: List the monitoring you already have
+
+Earlier labs already created log groups and metrics as a side effect. List them before adding more.
 
 ```bash
 {
@@ -139,13 +244,19 @@ Step 5 - Inventory the monitoring you already have and did not know about¶
   aws cloudwatch list-dashboards --query 'DashboardEntries[].DashboardName' --output text
 } | tee outputs/lab-13-telemetry-inventory.txt
 ```
-![9](../../screenshots/lab13/9.png)
 
+!!! tip
+    A `None` in the retention column means the log group never expires. Step 6 fixes this.
 
+![Step 5: Existing telemetry inventory](../../screenshots/lab13/9.png)
 
-Step 6 - Create the central log group and set retention on everything¶
+---
 
-Command - part 1, create the central group
+## Part B: Logs
+
+### Step 6: Create the central log group and set retention on every log group
+
+**Part 1: create the central group.** The command only creates the group if it does not already exist, so it is safe to run again.
 
 ```bash
 CENTRAL_LOG_GROUP=/usms/central/application
@@ -158,13 +269,11 @@ aws logs describe-log-groups --log-group-name-prefix "$CENTRAL_LOG_GROUP" \
 aws logs put-retention-policy \
   --log-group-name "$CENTRAL_LOG_GROUP" \
   --retention-in-days 30
-
 ```
-![10](../../screenshots/lab13/10.png)
 
+![Step 6: Central log group created](../../screenshots/lab13/10.png)
 
-
-Command - part 2, fix every USMS log group
+**Part 2: set retention on every USMS log group.** Application logs are kept for 30 days and function logs for 14. Any group that does not exist is skipped.
 
 ```bash
 NOTIFIER_LOG_GROUP="${USMS_LOG_GROUP_NOTIFIER:-/aws/lambda/usms-transcript-notifier}"
@@ -185,20 +294,25 @@ set_retention "$NOTIFIER_LOG_GROUP"                14
 set_retention /aws/lambda/usms-edge-viewer-request 14
 set_retention /aws/lambda/usms-edge-origin-response 14
 ```
-![11](../../screenshots/lab13/11.png)
 
-Verify
+![Step 6: Retention set on USMS log groups](../../screenshots/lab13/11.png)
+
+**Verify**
 
 ```bash
 aws logs describe-log-groups \
   --query 'sort_by(logGroups, &logGroupName)[].{Group:logGroupName,Days:retentionInDays}' \
   --output table
 ```
-![12](../../screenshots/lab13/12.png)
 
-Step 7 - Write log events, and get the timestamp units right¶
+![Step 6 verify: Retention per log group](../../screenshots/lab13/12.png)
 
-```bash 
+### Step 7: Write log events with the correct timestamp units
+
+!!! warning "Timestamps are in milliseconds"
+    `put-log-events` expects timestamps in **milliseconds** since the epoch. If you pass seconds, the events are dated in 1970 and are rejected as too old. That is why the script multiplies `time.time()` by 1000.
+
+```bash
 STREAM="lab-13-$(date -u +%Y%m%d)"
 
 aws logs create-log-stream \
@@ -215,7 +329,7 @@ print(json.dumps([
   {"timestamp": now-1000, "message": 'USMS_EVENT {"event":"transcript.processed","student":"stu-00982","faculty":"engineering","seconds":1.91}'},
   {"timestamp": now,      "message": 'ERROR USMS_EVENT {"event":"transcript.failed","student":"stu-01044","faculty":"science","reason":"render timeout"}'},
 ]))
-
+EOF
 )
 
 aws logs put-log-events \
@@ -224,18 +338,25 @@ aws logs put-log-events \
   --log-events "$EVENTS" \
   --query 'rejectedLogEventsInfo' --output json
 ```
-![13](../../screenshots/lab13/13.png)
 
-Verify
+!!! check "Expected result"
+    `null`, meaning no events were rejected.
+
+![Step 7: Four events accepted](../../screenshots/lab13/13.png)
+
+**Verify**
 
 ```bash
 aws logs filter-log-events \
   --log-group-name "$CENTRAL_LOG_GROUP" \
   --query 'events[].[timestamp,message]' --output text
 ```
-![14](../../screenshots/lab13/14.png)
 
-Step 8 - Test a filter pattern before you deploy it¶
+![Step 7 verify: Events read back](../../screenshots/lab13/14.png)
+
+### Step 8: Test a filter pattern before you deploy it
+
+`test-metric-filter` shows which sample lines a pattern matches, without creating anything. Only the first of the four sample lines should match.
 
 ```bash
 aws logs test-metric-filter \
@@ -248,24 +369,17 @@ aws logs test-metric-filter \
   --query 'matches[].[eventNumber,eventMessage]' --output table \
   | tee outputs/lab-13-filter-test.json
 ```
-![15](../../screenshots/lab13/15.png)
 
-Step 8 - Test a filter pattern before you deploy it¶
+![Step 8: Only event 1 matches](../../screenshots/lab13/15.png)
 
-```bash 
-aws logs test-metric-filter \
-  --filter-pattern 'USMS_NOTIFY' \
-  --log-event-messages \
-    'USMS_NOTIFY {"bucket": "usms-student-data", "key": "transcripts/evidence/a.json", "readable": true}' \
-    'usms-transcript-notifier: 1 record(s), channel=stdout, bucket_hint=usms-student-data' \
-    'REPORT RequestId: 4c8e	Duration: 18.42 ms	Billed Duration: 19 ms' \
-    'skipping non-transcript object: notes/ignore-me.json' \
-  --query 'matches[].[eventNumber,eventMessage]' --output table \
-  | tee outputs/lab-13-filter-test.json
-```
-![16](../../screenshots/lab13/16.png)
+### Step 9: Deploy two metric filters
 
-Step 9 - Deploy two metric filters¶
+| Filter | Log group | Pattern | Metric |
+|---|---|---|---|
+| `usms-notify-count` | Notifier log group | `USMS_NOTIFY` | `NotifyCount` |
+| `usms-central-errors` | `/usms/central/application` | `ERROR` | `CentralErrorCount` |
+
+`defaultValue=0` makes the filter publish a zero when nothing matches. Without it, quiet periods would have no data points at all.
 
 ```bash
 aws logs put-metric-filter \
@@ -282,21 +396,24 @@ aws logs put-metric-filter \
   --metric-transformations \
       metricName=CentralErrorCount,metricNamespace=USMS/Application,metricValue=1,defaultValue=0
 ```
-![17](../../screenshots/lab13/17.png)
 
-Verify
+![Step 9: Metric filters created](../../screenshots/lab13/17.png)
+
+**Verify**
 
 ```bash
 aws logs describe-metric-filters \
   --query 'metricFilters[?starts_with(filterName, `usms-`)].[filterName,logGroupName,filterPattern,metricTransformations[0].metricName]' \
   --output table
 ```
-![18](../../screenshots/lab13/18.png)
 
-Step 10 - Prove the filter end to end¶
-Create, perturb, read back: make the notifier run, then look for the metric.
+![Step 9 verify: Both filters listed](../../screenshots/lab13/18.png)
 
-Command - part 1, perturb
+### Step 10: Prove the filter works end to end
+
+To prove the filter works, make the notifier run, then look for the metric it should produce.
+
+**Part 1: trigger the notifier**
 
 ```bash
 BUCKET="${USMS_BUCKET_NAME:-usms-student-data}"
@@ -325,9 +442,13 @@ aws lambda invoke \
   --query 'FunctionError' --output text \
   outputs/lab-13-notifier-probe.json
 ```
-![19](../../screenshots/lab13/19.png)
 
-Command - part 2, read back
+!!! check "Expected result"
+    An ETag, followed by `None`, which means the function ran without an error.
+
+![Step 10: Notifier invoked without error](../../screenshots/lab13/19.png)
+
+**Part 2: read the metric back over the last 15 minutes.** `START` and `END` are reused in Steps 11 and 24.
 
 ```bash
 WINDOW=$(python3 -c "
@@ -352,11 +473,19 @@ aws cloudwatch get-metric-statistics \
   --output table \
   | tee outputs/lab-13-metric-readback.json
 ```
-![20](../../screenshots/lab13/20.png)
 
-Step 11 - Publish custom metrics, and meet dimensions¶
+![Step 10: NotifyCount data points](../../screenshots/lab13/20.png)
 
-Command - part 1, the shorthand form
+---
+
+## Part C: Custom Metrics and Permissions
+
+### Step 11: Publish custom metrics with dimensions
+
+!!! note "Dimensions create separate metrics"
+    CloudWatch does not add up metrics across dimensions. `TranscriptsProcessed` published with `Faculty` and `Stage` dimensions is a separate metric from `TranscriptsProcessed` published with no dimensions. To see a per-faculty breakdown **and** an overall total, you must publish both.
+
+**Part 1: the shorthand form**
 
 ```bash
 aws cloudwatch put-metric-data \
@@ -368,9 +497,10 @@ aws cloudwatch put-metric-data \
   --namespace USMS/Application \
   --metric-data 'MetricName=TranscriptsProcessed,Unit=Count,Value=1'
 ```
-![21](../../screenshots/lab13/21.png)
 
-Command - part 2, the JSON form, with timestamps
+![Step 11: Dimensioned and total data points published](../../screenshots/lab13/21.png)
+
+**Part 2: the JSON form, with timestamps.** The heredoc is **unquoted** (`<< EOF`) so the shell fills in `${NOW_ISO}`.
 
 ```bash
 NOW_ISO=$(python3 -c "
@@ -426,9 +556,10 @@ aws cloudwatch put-metric-data \
   --namespace USMS/Application \
   --metric-data file://templates/lab-13-metric-data.json
 ```
-![22](../../screenshots/lab13/22.png)
 
-Verify
+![Step 11: JSON metric data published](../../screenshots/lab13/22.png)
+
+**Verify:** list the metrics and their dimensions, then get statistics for the two lag values.
 
 ```bash
 aws cloudwatch list-metrics --namespace USMS/Application \
@@ -444,15 +575,29 @@ aws cloudwatch get-metric-statistics \
   --statistics SampleCount Sum Average Maximum \
   --query 'Datapoints[0]' --output json
 ```
-![23](../../screenshots/lab13/23.png)
 
-Step 12 - Give the roles permission to emit telemetry¶
-```bash 
+!!! check "Expected result"
+    For `TranscriptLagSeconds`, SampleCount is 2, Sum is 2.33, Average is 1.165 and Maximum is 1.91.
+
+![Step 11 verify: Metrics and statistics](../../screenshots/lab13/23.png)
+
+### Step 12: Give the roles permission to send telemetry
+
+`policies/usms-observability-write-policy.json` grants three permissions:
+
+- writing log events to USMS log groups. Each ARN ends in `:*` so the permission covers the log streams, not just the group.
+- `PutMetricData`, limited to the `USMS/Application` namespace by a `cloudwatch:namespace` condition
+- sending X-Ray trace segments
+
+**Part 1: validate the document**
+
+```bash
 python3 -m json.tool policies/usms-observability-write-policy.json > /dev/null && echo "valid JSON"
 ```
-![24](../../screenshots/lab13/24.png)
 
-Command - part 2, create and attach
+![Step 12: Policy document valid](../../screenshots/lab13/24.png)
+
+**Part 2: create the policy and attach it to both roles.** If the policy already exists, the command looks up its ARN instead of creating it again.
 
 ```bash
 OBS_POLICY_ARN=$(aws iam create-policy \
@@ -471,9 +616,10 @@ for role_ref in "${USMS_ROLE_LAMBDA:-usms-lambda-exec-role}" "${USMS_ROLE_EC2:-u
     && printf '  attached to %s\n' "$role"
 done
 ```
-![25](../../screenshots/lab13/25.png)
 
-Verify
+![Step 12: Policy attached to both roles](../../screenshots/lab13/25.png)
+
+**Verify**
 
 ```bash
 aws iam list-attached-role-policies --role-name "$(basename "${USMS_ROLE_LAMBDA:-usms-lambda-exec-role}")" \
@@ -485,18 +631,27 @@ aws iam get-policy-version \
                     --query 'Policy.DefaultVersionId' --output text)" \
   --query 'PolicyVersion.Document.Statement[].[Sid,Effect]' --output table
 ```
-![26](../../screenshots/lab13/26.png)
 
-Step 13 - Instrument the notifier, and use an alias for what aliases are for¶
+![Step 12 verify: Attached policies and statements](../../screenshots/lab13/26.png)
 
-Command - part 1, the instrumented handler
-```bash 
+---
+
+## Part D: Instrumentation and Tracing
+
+### Step 13: Instrument the notifier and move the alias
+
+`labs/lab-13-cloudwatch-xray/transcript-notifier-v2/notifier.py` is the instrumented handler. It publishes custom metrics, logs a `USMS_SUMMARY` line, and records the trace ID. You deploy it as a new **version** and move the `live` alias to that version. Anything that calls `live` picks up the new code, and you can roll back by moving the alias to the previous version.
+
+**Part 1: check the handler compiles**
+
+```bash
 python3 -m py_compile labs/lab-13-cloudwatch-xray/transcript-notifier-v2/notifier.py \
   && echo "syntax OK (python3)"
 ```
-![27](../../screenshots/lab13/27.png)
 
-Command - part 2, deploy, publish, repoint
+![Step 13: Handler syntax OK](../../screenshots/lab13/27.png)
+
+**Part 2: deploy, publish a version, and move the alias**
 
 ```bash
 ( cd labs/lab-13-cloudwatch-xray/transcript-notifier-v2 \
@@ -528,9 +683,10 @@ aws lambda update-alias \
   --function-version "$NOTIFIER_V2" \
   --query '{Alias:Name,Version:FunctionVersion}' --output table
 ```
-![28](../../screenshots/lab13/28.png)
 
-Verify
+![Step 13: New version published, alias moved](../../screenshots/lab13/28.png)
+
+**Verify:** call the alias and decode the end of its log.
 
 ```bash
 aws lambda get-function-configuration --function-name "$NOTIFIER" --qualifier live \
@@ -545,9 +701,12 @@ aws lambda invoke \
 
 python3 -m json.tool outputs/lab-13-notifier-v2-probe.json
 ```
-![29](../../screenshots/lab13/29.png)
 
-Step 14 - Turn on active tracing¶
+![Step 13 verify: Alias runs the instrumented version](../../screenshots/lab13/29.png)
+
+### Step 14: Turn on active tracing
+
+A published version cannot be changed. To serve the tracing setting through `live`, you change the function, publish another version, and move the alias again.
 
 ```bash
 aws lambda update-function-configuration \
@@ -568,9 +727,10 @@ aws lambda update-alias \
   --function-version "$NOTIFIER_V3" \
   --query 'FunctionVersion' --output text
 ```
-![30](../../screenshots/lab13/30.png)
 
-Verify
+![Step 14: Tracing enabled, alias moved again](../../screenshots/lab13/30.png)
+
+**Verify:** tracing is `Active` on the alias, and the role still has the observability policy (`1`).
 
 ```bash
 aws lambda get-function-configuration --function-name "$NOTIFIER" --qualifier live \
@@ -579,9 +739,20 @@ aws lambda get-function-configuration --function-name "$NOTIFIER" --qualifier li
 aws iam list-attached-role-policies --role-name "$(basename "${USMS_ROLE_LAMBDA:-usms-lambda-exec-role}")" \
   --query "AttachedPolicies[?PolicyName=='USMSObservabilityWrite'] | length(@)" --output text
 ```
-![31](../../screenshots/lab13/31.png)
 
-Step 15 - The X-Ray data model, and your first segment¶
+![Step 14 verify: Tracing Active on live](../../screenshots/lab13/31.png)
+
+### Step 15: The X-Ray data model and your first segment
+
+A **trace** is one request moving through the system. It is made up of **segments**, one for each service that handled the request, and each segment can contain **subsegments** for the work inside it.
+
+| Field | Format | Purpose |
+|---|---|---|
+| `trace_id` | `1-<8 hex: epoch seconds>-<24 hex>` | Groups every segment of one request |
+| `id` | 16 hex characters | Identifies this segment |
+| `start_time` / `end_time` | Epoch **seconds** (decimal) | Duration |
+| `annotations` | Flat key/value pairs, **indexed** | Searchable with filter expressions |
+| `metadata` | Any JSON, **not indexed** | Context for reading the trace, not for searching |
 
 ```bash
 python3 - << 'PY' > templates/lab-13-segment-parent.json
@@ -622,12 +793,14 @@ PY
 python3 -m json.tool templates/lab-13-segment-parent.json > /dev/null && echo "valid JSON"
 tail -1 outputs/lab-13-trace-ids.txt
 ```
-![32](../../screenshots/lab13/32.png)
 
-Step 16 - Subsegments, a downstream service, and reading a trace back¶
-A trace answers where rather than how long once it has internal structure and more than one service.
+![Step 15: Parent segment generated, trace ID recorded](../../screenshots/lab13/32.png)
 
-Command - part 1, the same segment with subsegments
+### Step 16: Add subsegments and a downstream service, then read the trace back
+
+A trace with only one timing tells you how long a request took. Once it contains subsegments and more than one service, it also tells you where the time was spent.
+
+**Part 1: the same segment with three subsegments**
 
 ```bash
 TRACE_ID=$(awk 'END {print $1}' outputs/lab-13-trace-ids.txt)
@@ -690,9 +863,10 @@ PY
 
 python3 -m json.tool templates/lab-13-segment-subsegments.json > /dev/null && echo "valid JSON"
 ```
-![33](../../screenshots/lab13/33.png)
 
-Command - part 2, a second service in the same trace
+![Step 16: Segment with three subsegments](../../screenshots/lab13/33.png)
+
+**Part 2: add a second service to the same trace and send both segments.** The downstream segment shares the `trace_id`, and its `parent_id` points at the notifier segment.
 
 ```bash
 python3 - "$TRACE_ID" "$PARENT_ID" << 'PY' > templates/lab-13-segment-downstream.json
@@ -729,9 +903,13 @@ aws xray put-trace-segments \
     "$(cat templates/lab-13-segment-downstream.json)" \
   --query 'UnprocessedTraceSegments' --output json
 ```
-![34](../../screenshots/lab13/34.png)
 
-Command - part 3, read it back
+!!! check "Expected result"
+    `[]`, meaning both segments were accepted.
+
+![Step 16: Both segments sent](../../screenshots/lab13/34.png)
+
+**Part 3: read the trace back.** X-Ray time windows are in epoch **seconds**. `XSTART` and `XEND` are reused in Steps 17 and 23.
 
 ```bash
 XW=$(python3 -c "
@@ -752,10 +930,12 @@ aws xray batch-get-traces --trace-ids "$TRACE_ID" \
   --query 'Traces[0].{Id:Id,Duration:Duration,Segments:length(Segments)}' \
   --output json
 ```
-![35](../../screenshots/lab13/35.png)
 
-Step 17 - Search by annotation, read the service graph, and write the emitter¶
-Command - part 1, search
+![Step 16: Trace summary and full trace](../../screenshots/lab13/35.png)
+
+### Step 17: Search by annotation, read the service graph, and run the emitter script
+
+**Part 1: search by annotation.** The second query should return nothing, which confirms the filter is really filtering.
 
 ```bash
 aws xray get-trace-summaries \
@@ -769,12 +949,14 @@ aws xray get-trace-summaries \
   --filter-expression 'annotation.faculty = "engineering"' \
   --query 'length(TraceSummaries)' --output text \
   || echo "filter expressions unsupported on this build"
-1 then 0. The second call proves the filter actually filters.
 ```
-![36](../../screenshots/lab13/36.png)
 
+!!! check "Expected result"
+    `1`, then `0`.
 
-Command - part 2, the service graph
+![Step 17: Annotation search returns 1 then 0](../../screenshots/lab13/36.png)
+
+**Part 2: the service graph**
 
 ```bash
 aws xray get-service-graph \
@@ -782,12 +964,10 @@ aws xray get-service-graph \
   --query 'Services[].{Name:Name,Type:Type,Edges:length(Edges),Ok:SummaryStatistics.OkCount}' \
   --output table | tee outputs/lab-13-service-graph.json
 ```
-![37](../../screenshots/lab13/37.png)
 
+![Step 17: Service graph](../../screenshots/lab13/37.png)
 
-
-Command - part 3, one script that emits all three signals
-
+**Part 3: one script that sends all three signals.** `scripts/utilities/usms-emit-telemetry.sh <faculty> <seconds>` writes a log event, publishes metrics, and sends a trace segment for one simulated transcript. Two of the runs below are deliberately over 2 seconds; Step 19's lag alarm uses that threshold.
 
 ```bash
 chmod +x scripts/utilities/usms-emit-telemetry.sh
@@ -797,10 +977,12 @@ bash -n scripts/utilities/usms-emit-telemetry.sh && echo "syntax OK"
 ./scripts/utilities/usms-emit-telemetry.sh engineering 2.40
 ./scripts/utilities/usms-emit-telemetry.sh engineering 3.10
 ```
-![38](../../screenshots/lab13/38.png)
 
+![Step 17: Emitter run three times](../../screenshots/lab13/38.png)
 
-Step 18 - Decide what gets traced at all¶
+### Step 18: Decide what gets traced
+
+Tracing every request costs money and adds noise. A sampling rule sets how much is traced. This rule traces the first 2 requests each second (the **reservoir**), then 10% of the rest (the **fixed rate**), and applies only to the notifier.
 
 ```bash
 aws xray get-sampling-rules \
@@ -831,41 +1013,25 @@ aws xray create-sampling-rule \
   --output table \
   || echo "create-sampling-rule unsupported on this build - the document above is the deliverable"
 ```
-![39](../../screenshots/lab13/39.png)
 
-Command - part 2, the absence alarm
+![Step 18: Sampling rule created](../../screenshots/lab13/39.png)
 
-```bash
-aws cloudwatch put-metric-alarm \
-  --alarm-name usms-notify-silence \
-  --alarm-description "No transcript notifications for 15 minutes - the pipeline has gone quiet" \
-  --namespace USMS/Application \
-  --metric-name NotifyCount \
-  --statistic Sum \
-  --period 300 \
-  --evaluation-periods 3 \
-  --datapoints-to-alarm 3 \
-  --threshold 1 \
-  --comparison-operator LessThanThreshold \
-  --treat-missing-data breaching \
-  --tags Key=Project,Value=USMS Key=Lab,Value=08
-```
-![40](../../screenshots/lab13/40.png)
+---
 
-Verify
+## Part E: Alarms
 
-```bash
-aws cloudwatch describe-alarms \
-  --alarm-names usms-transcript-lag-high usms-notify-silence \
-  --query 'MetricAlarms[].{Name:AlarmName,Metric:MetricName,Stat:Statistic,Th:Threshold,Op:ComparisonOperator,Missing:TreatMissingData,State:StateValue}' \
-  --output table
-```
-![41](../../screenshots/lab13/41.png)
+### Step 19: Create two alarms, one of which watches for an absence
 
+| Alarm | Watches | Statistic | Fires when | Missing data |
+|---|---|---|---|---|
+| `usms-transcript-lag-high` | `TranscriptLagSeconds` (Stage=notify) | **Maximum** | Above 2 s in 2 of 3 one-minute periods | `notBreaching` |
+| `usms-notify-silence` | `NotifyCount` | Sum | Below 1 for 3 five-minute periods (15 min) | **`breaching`** |
 
-Step 19 - Create two alarms, one of which watches for an absence¶
+!!! note "Why these settings?"
+    - The lag alarm uses **Maximum** because an average can hide one very slow transcript among many fast ones.
+    - The silence alarm watches for something **not** happening. When the pipeline stops, no data arrives at all, so missing data has to count as breaching. Otherwise the alarm would never fire in the situation it exists to catch.
 
-Command - part 1, the threshold alarm
+**Part 1: the threshold alarm**
 
 ```bash
 aws cloudwatch put-metric-alarm \
@@ -884,11 +1050,10 @@ aws cloudwatch put-metric-alarm \
   --unit Seconds \
   --tags Key=Project,Value=USMS Key=Lab,Value=08
 ```
-![42](../../screenshots/lab13/42.png)
 
+![Step 19: Lag alarm created](../../screenshots/lab13/42.png)
 
-
-Command - part 2, the absence alarm
+**Part 2: the absence alarm**
 
 ```bash
 aws cloudwatch put-metric-alarm \
@@ -905,11 +1070,10 @@ aws cloudwatch put-metric-alarm \
   --treat-missing-data breaching \
   --tags Key=Project,Value=USMS Key=Lab,Value=08
 ```
-![43](../../screenshots/lab13/43.png)
 
+![Step 19: Silence alarm created](../../screenshots/lab13/43.png)
 
-
-Verify
+**Verify**
 
 ```bash
 aws cloudwatch describe-alarms \
@@ -917,11 +1081,14 @@ aws cloudwatch describe-alarms \
   --query 'MetricAlarms[].{Name:AlarmName,Metric:MetricName,Stat:Statistic,Th:Threshold,Op:ComparisonOperator,Missing:TreatMissingData,State:StateValue}' \
   --output table
 ```
-![44](../../screenshots/lab13/44.png)
 
-Step 20 - Prove the alarms, by making one fire¶
+![Step 19 verify: Both alarms configured](../../screenshots/lab13/44.png)
 
-Command - part 1, force the transition
+### Step 20: Prove an alarm works by making it fire
+
+Floci stores alarms but does not evaluate them, so a real breach will not change their state. `set-alarm-state` forces a state change, which proves the alarm is set up correctly and that its history is recorded.
+
+**Part 1: force the alarm into `ALARM`**
 
 ```bash
 aws cloudwatch set-alarm-state \
@@ -936,11 +1103,10 @@ aws cloudwatch describe-alarms --alarm-names usms-transcript-lag-high \
   --query 'MetricAlarms[0].{State:StateValue,Reason:StateReason,Since:StateUpdatedTimestamp}' \
   --output json
 ```
-![45](../../screenshots/lab13/45.png)
 
+![Step 20: Alarm in ALARM state](../../screenshots/lab13/45.png)
 
-
-Command - part 2, read the history
+**Part 2: read the history**
 
 ```bash
 aws cloudwatch describe-alarm-history \
@@ -951,11 +1117,10 @@ aws cloudwatch describe-alarm-history \
   --output table \
   | tee outputs/lab-13-alarm-history.json
 ```
-![46](../../screenshots/lab13/46.png)
 
+![Step 20: State change recorded in history](../../screenshots/lab13/46.png)
 
-
-Command - part 3, put it back
+**Part 3: put it back to `OK`.** The verification script fails if any alarm is left in `ALARM`.
 
 ```bash
 aws cloudwatch set-alarm-state \
@@ -966,14 +1131,15 @@ aws cloudwatch set-alarm-state \
 aws cloudwatch describe-alarms --alarm-names usms-transcript-lag-high \
   --query 'MetricAlarms[0].StateValue' --output text
 ```
-![47](../../screenshots/lab13/47.png)
 
-Step 21 - Combine them into one incident¶
+![Step 20: Alarm restored to OK](../../screenshots/lab13/47.png)
 
-> **Floci limitation:** `PutCompositeAlarm` is not implemented in Floci's CloudWatch
-> (`UnsupportedOperation ... not supported by CloudWatch JSON`). The command below is correct
-> against real AWS but will fail here. On Floci, record the error as your evidence and skip the
-> composite-specific verification; the two child alarms are the part that can be demonstrated.
+### Step 21: Combine the alarms into one incident
+
+A composite alarm turns "slow **or** silent" into one incident, so on-call staff get one page instead of two for the same problem.
+
+!!! warning "Floci limitation"
+    Floci's CloudWatch does not implement `PutCompositeAlarm`; it returns `UnsupportedOperation ... not supported by CloudWatch JSON`. The command below works against real AWS but fails here. On Floci, keep the error as your evidence and skip the composite-specific checks. You can still demonstrate the two child alarms.
 
 ```bash
 aws cloudwatch put-composite-alarm \
@@ -983,10 +1149,10 @@ aws cloudwatch put-composite-alarm \
   --actions-enabled \
   --tags Key=Project,Value=USMS Key=Lab,Value=08
 ```
-![48](../../screenshots/lab13/48.png)
 
+![Step 21: put-composite-alarm result](../../screenshots/lab13/48.png)
 
-Verify
+**Verify (real AWS):** drive one child alarm into `ALARM`, check the composite, then restore the child alarm.
 
 ```bash
 aws cloudwatch describe-alarms --alarm-types CompositeAlarm \
@@ -1008,10 +1174,16 @@ aws cloudwatch set-alarm-state \
   --state-value OK \
   --state-reason "Lab 13 Step 21: restoring state"
 ```
-![49](../../screenshots/lab13/49.png)
 
+![Step 21 verify: Composite alarm check](../../screenshots/lab13/49.png)
 
-Step 22 - Build the dashboard¶
+---
+
+## Part F: Dashboard and Log Queries
+
+### Step 22: Build the dashboard
+
+`templates/lab-13-dashboard.json` defines the `usms-overview` dashboard with five widgets on a 24-column grid.
 
 ```bash
 python3 -m json.tool templates/lab-13-dashboard.json > /dev/null && echo "valid JSON"
@@ -1021,12 +1193,13 @@ aws cloudwatch put-dashboard \
   --dashboard-body file://templates/lab-13-dashboard.json \
   --query 'DashboardValidationMessages' --output json
 ```
-![50](../../screenshots/lab13/50.png)
 
+!!! check "Expected result"
+    `[]`, meaning there were no validation messages.
 
+![Step 22: Dashboard created](../../screenshots/lab13/50.png)
 
-
-Verify
+**Verify:** read the dashboard back and check the number of widgets, their types, the grid width, and whether any widgets overlap.
 
 ```bash
 aws cloudwatch list-dashboards \
@@ -1045,12 +1218,14 @@ overlap = any(a[1] > b[0] and a[3] > b[2] and b[3] > a[2] for a, b in zip(rows, 
 print('overlapping :', overlap)
 "
 ```
-![54](../../screenshots/lab13/54.png)
 
+![Step 22 verify: 5 widgets, grid width 24, no overlap](../../screenshots/lab13/54.png)
 
-Step 23 - Query the logs properly¶
+### Step 23: Query the logs
 
-Command - path A, if Step 4 reported Insights as SUPPORTED
+Question: **how many transcript events did each faculty have?** Answer it with whichever tool Step 4 reported as supported.
+
+**Path A: Logs Insights is SUPPORTED**
 
 ```bash
 QUERY_ID=$(aws logs start-query \
@@ -1075,12 +1250,10 @@ done
 aws logs get-query-results --query-id "$QUERY_ID" \
   --query 'results[].[ [0].value, [1].value ]' --output table
 ```
-![51](../../screenshots/lab13/51.png)
 
+![Step 23: Path A, Logs Insights result](../../screenshots/lab13/51.png)
 
-Command - path B, if Insights is unsupported
-
-Answer the same question with the tool you have:
+**Path B: Logs Insights is UNSUPPORTED.** Get the matching events with `filter-log-events` and count them in Python.
 
 ```bash
 aws logs filter-log-events \
@@ -1108,22 +1281,28 @@ for faculty, n in counts.most_common():
     print('%-14s %d' % (faculty, n))
 "
 ```
-![52](../../screenshots/lab13/52.png)
 
+![Step 23: Path B, per-faculty counts](../../screenshots/lab13/52.png)
 
-
-Verify
+**Verify**
 
 ```bash
 aws logs describe-log-groups --log-group-name-prefix /usms/central \
   --query 'logGroups[0].{Group:logGroupName,Retention:retentionInDays,Bytes:storedBytes}' \
   --output json
 ```
-![53](../../screenshots/lab13/53.png)
 
-Step 24 - Restart Floci and read everything back¶
+![Step 23 verify: Central log group status](../../screenshots/lab13/53.png)
 
-Command - part 1, record the state
+---
+
+## Part G: Persistence, Record and Commit
+
+### Step 24: Restart Floci and read everything back
+
+Record the configuration, restart the emulator, record it again, and compare. If the two records match, everything survived the restart.
+
+**Part 1: record the current state**
 
 ```bash
 inventory() {
@@ -1157,21 +1336,20 @@ DATA_BEFORE=$(aws cloudwatch get-metric-statistics \
 
 echo "metric data points before restart: $DATA_BEFORE"
 ```
-![55](../../screenshots/lab13/55.png)
 
+![Step 24: State recorded before the restart](../../screenshots/lab13/55.png)
 
-Command - part 2, perturb
+**Part 2: restart Floci**
 
 ```bash
 ./scripts/setup/floci-down.sh
 ./scripts/setup/floci-up.sh
 ./scripts/utilities/whoami.sh
 ```
-![56](../../screenshots/lab13/56.png)
 
+![Step 24: Floci restarted](../../screenshots/lab13/56.png)
 
-
-Command - part 3, read back
+**Part 3: record the state again and compare.** The restart does not keep your shell variables, so set them again first.
 
 ```bash
 source configs/course.env
@@ -1191,11 +1369,17 @@ DATA_AFTER=$(aws cloudwatch get-metric-statistics \
 
 printf 'metric data points: before=%s after=%s\n' "$DATA_BEFORE" "$DATA_AFTER"
 ```
-![57](../../screenshots/lab13/57.png)
 
-Step 25 - Write configs/lab-13.env¶
+!!! note
+    If you open a new terminal for Part 3, the `inventory` function and the `START`/`END` variables from Part 1 are gone. Run Part 3 in the same terminal as Part 1.
 
-```bash 
+![Step 24: Configuration identical after the restart](../../screenshots/lab13/57.png)
+
+### Step 25: Write `configs/lab-13.env`
+
+The file stores names, ARNs and IDs only, with **no secrets**. The heredoc is **unquoted** (`<< EOF`) so the `$(...)` lookups and the `${NOTIFIER_V2}`/`${NOTIFIER_V3}` values are filled in when the file is written. Run it in the same shell as Steps 13 and 14.
+
+```bash
 cat > configs/lab-13.env << EOF
 # Lab 13 - Centralized logging and monitoring with CloudWatch and X-Ray
 # Generated on $(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1256,10 +1440,10 @@ EOF
 
 cat configs/lab-13.env
 ```
-![58](../../screenshots/lab13/58.png)
 
+![Step 25: lab-13.env written](../../screenshots/lab13/58.png)
 
-Verify
+**Verify:** expect 28 exports, no empty values, and a file that sources without errors.
 
 ```bash
 grep -c '^export' configs/lab-13.env
@@ -1268,9 +1452,444 @@ grep -nE '^export [A-Z_]+=$|None' configs/lab-13.env || echo "all values populat
 
 ( source configs/lab-13.env && echo "sources cleanly" )
 ```
-![59](../../screenshots/lab13/59.png)
 
+![Step 25 verify: 28 exports, all populated](../../screenshots/lab13/59.png)
 
-Step 26 - Check what Git sees, and commit¶
+### Step 26: Check what Git sees, then commit
 
+Commit the source, policies, templates, scripts and `lab-13.env`. Do **not** commit `outputs/`, which holds evidence files and the deployment zip.
 
+```bash
+git status --short
+git add labs/lab-13-cloudwatch-xray project/checkpoint-01 \
+        policies templates scripts/utilities configs/lab-13.env
+git status --short
+git commit -m "Lab 13: centralized logging and monitoring with CloudWatch and X-Ray"
+```
+
+![Step 26: Lab 13 committed](../../screenshots/lab13/60.png)
+
+---
+
+## Verification
+
+### Build `scripts/utilities/verify-lab-13.sh`
+
+The script only reads; it changes nothing. It checks that every Lab 13 resource exists **and** is configured the way the lab requires.
+
+| Block | Checks | What it confirms |
+|---|---|---|
+| Environment | 3 | Floci is running, persistent, and reachable |
+| Log layer | 6 | Central group, retention everywhere, at least one stream |
+| Metric filters | 3 | Both filters are attached to the right log groups |
+| Metrics | 4 | Dimensioned and total series both exist |
+| IAM | 5 | Policy is attached to both roles and scoped correctly |
+| Instrumented notifier | 5 | Alias has moved past v1, tracing is Active |
+| Alarms | 8 | Statistics, missing-data handling, composite rule, none left in ALARM |
+| Dashboard | 4 | 5 widgets, valid JSON, no overlap |
+| X-Ray documents | 3 | Sampling rule is complete, segments are consistent |
+| Files and Git hygiene | 8 | 28 exports, no outputs or zips tracked |
+
+```bash
+cat > scripts/utilities/verify-lab-13.sh << 'EOF'
+#!/usr/bin/env bash
+# Verify every Lab 13 artefact exists AND is configured as the lab requires.
+# Exit 1 if anything is missing. Read-only: this script changes nothing.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/course.env"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/lab-01.env" 2>/dev/null || true
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/lab-10.env" 2>/dev/null || true
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/lab-13.env" 2>/dev/null || true
+
+CENTRAL="${USMS_LOG_GROUP_CENTRAL:-/usms/central/application}"
+FN_LOG="${USMS_LOG_GROUP_NOTIFIER:-/aws/lambda/usms-transcript-notifier}"
+ECS_LOG="${USMS_LOG_GROUP_ECS:-/usms/ecs/enrolment}"
+NS="${USMS_METRIC_NAMESPACE:-USMS/Application}"
+NOTIFIER="${USMS_LAMBDA_NOTIFIER_FN:-usms-transcript-notifier}"
+ROLE_LAMBDA="${USMS_ROLE_LAMBDA:-usms-lambda-exec-role}"
+ROLE_EC2="${USMS_ROLE_EC2:-usms-ec2-app-role}"
+A_LAG="${USMS_ALARM_LAG_HIGH:-usms-transcript-lag-high}"
+A_SILENCE="${USMS_ALARM_NOTIFY_SILENCE:-usms-notify-silence}"
+A_COMP="${USMS_ALARM_COMPOSITE:-usms-transcript-pipeline-down}"
+DASH="${USMS_DASHBOARD:-usms-overview}"
+
+PASS=0; FAIL=0
+check() {
+  if eval "$2" >/dev/null 2>&1; then printf "  ✔ %s\n" "$1"; PASS=$((PASS+1))
+  else printf "  ✗ %s\n" "$1"; FAIL=$((FAIL+1)); fi
+}
+
+# --- helpers -------------------------------------------------------------
+# Defined as functions so the check strings below stay free of nested quoting.
+
+lg_retention() {   # $1 = log group name
+  aws logs describe-log-groups --log-group-name-prefix "$1" \
+    --query "logGroups[?logGroupName=='$1'].retentionInDays | [0]" --output text
+}
+
+lg_any_unset() {   # prints the names of USMS log groups with no retention policy
+  aws logs describe-log-groups \
+    --query 'logGroups[?retentionInDays==null].logGroupName' --output text \
+    | tr '\t' '\n' | grep -E '^/usms/|^/aws/lambda/usms-'
+}
+
+mf_group() {   # $1 = filter name
+  aws logs describe-metric-filters \
+    --query "metricFilters[?filterName=='$1'].logGroupName | [0]" --output text
+}
+
+metric_dims() {   # $1 = metric name; prints one line per published dimension set
+  aws cloudwatch list-metrics --namespace "$NS" --metric-name "$1" \
+    --query 'Metrics[].join(`,`, Dimensions[].Name) || `NONE`' --output text
+}
+
+obs_policy_arn() {
+  aws iam list-policies --scope Local \
+    --query "Policies[?PolicyName=='USMSObservabilityWrite'].Arn | [0]" --output text
+}
+
+obs_policy_doc() {
+  local arn ver
+  arn=$(obs_policy_arn)
+  ver=$(aws iam get-policy --policy-arn "$arn" --query 'Policy.DefaultVersionId' --output text)
+  aws iam get-policy-version --policy-arn "$arn" --version-id "$ver" \
+    --query 'PolicyVersion.Document' --output json
+}
+
+role_has_obs() {   # $1 = role name
+  aws iam list-attached-role-policies --role-name "$1" --output text \
+    | grep -q USMSObservabilityWrite
+}
+
+alias_version() {
+  aws lambda get-alias --function-name "$NOTIFIER" --name live \
+    --query 'FunctionVersion' --output text
+}
+
+alarm_field() {   # $1 = alarm name, $2 = JMESPath field
+  aws cloudwatch describe-alarms --alarm-names "$1" \
+    --query "MetricAlarms[0].$2" --output text
+}
+
+composite_rule() {
+  aws cloudwatch describe-alarms --alarm-names "$A_COMP" --alarm-types CompositeAlarm \
+    --query 'CompositeAlarms[0].AlarmRule' --output text
+}
+
+dashboard_body() {
+  aws cloudwatch get-dashboard --dashboard-name "$DASH" --query 'DashboardBody' --output text
+}
+
+dashboard_widgets() {
+  dashboard_body | python3 -c 'import json,sys; print(len(json.load(sys.stdin)["widgets"]))'
+}
+
+dashboard_no_overlap() {
+  dashboard_body | python3 -c '
+import json, sys
+w = json.load(sys.stdin)["widgets"]
+boxes = [(x["x"], x["y"], x["x"]+x["width"], x["y"]+x["height"]) for x in w]
+for i, a in enumerate(boxes):
+    for b in boxes[i+1:]:
+        if a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]:
+            sys.exit(1)
+sys.exit(0)'
+}
+
+sampling_rule_complete() {
+  python3 -c '
+import json, sys
+r = json.load(open("templates/lab-13-sampling-rule.json"))
+need = {"RuleName","ResourceARN","Priority","FixedRate","ReservoirSize",
+        "ServiceName","ServiceType","Host","HTTPMethod","URLPath","Version"}
+sys.exit(0 if need.issubset(r) else 1)'
+}
+
+segments_consistent() {
+  python3 -c '
+import json, re, sys
+d = {n: json.load(open("templates/lab-13-segment-%s.json" % n))
+     for n in ("parent", "subsegments", "downstream")}
+tid = d["parent"]["trace_id"]
+ok = (re.fullmatch(r"1-[0-9a-f]{8}-[0-9a-f]{24}", tid)
+      and all(x["trace_id"] == tid for x in d.values())
+      and all(re.fullmatch(r"[0-9a-f]{16}", x["id"]) for x in d.values())
+      and d["downstream"].get("parent_id") == d["parent"]["id"]
+      and all(x["end_time"] > x["start_time"] for x in d.values()))
+sys.exit(0 if ok else 1)'
+}
+
+echo "== Environment =="
+check "Floci container running" \
+  'test "$(docker container inspect $FLOCI_CONTAINER_NAME --format "{{.State.Running}}")" = true'
+check "Storage mode is NOT memory" \
+  'docker container inspect $FLOCI_CONTAINER_NAME --format "{{range .Config.Env}}{{println .}}{{end}}" | grep -qE "^FLOCI_STORAGE_MODE=(hybrid|persistent|wal)$"'
+check "AWS CLI reaches Floci" \
+  'aws sts get-caller-identity'
+
+echo "== Log layer =="
+check "central log group $CENTRAL exists" \
+  'aws logs describe-log-groups --log-group-name-prefix "$CENTRAL" --query "length(logGroups)" --output text | grep -qv "^0$"'
+check "central log group retention is 30 days" \
+  'test "$(lg_retention "$CENTRAL")" = "30"'
+check "notifier log group has a retention policy" \
+  'lg_retention "$FN_LOG" | grep -qE "^[0-9]+$"'
+check "ECS log group has a retention policy" \
+  'lg_retention "$ECS_LOG" | grep -qE "^[0-9]+$"'
+check "NO USMS log group is left on never-expire" \
+  '! lg_any_unset | grep -q .'
+check "central log group has at least one stream" \
+  'test "$(aws logs describe-log-streams --log-group-name "$CENTRAL" --query "length(logStreams)" --output text)" != "0"'
+
+echo "== Metric filters =="
+check "usms-notify-count exists" \
+  'aws logs describe-metric-filters --filter-name-prefix usms-notify-count --query "length(metricFilters)" --output text | grep -qv "^0$"'
+check "usms-notify-count is attached to the NOTIFIER log group" \
+  'test "$(mf_group usms-notify-count)" = "$FN_LOG"'
+check "usms-central-errors is attached to the CENTRAL log group" \
+  'test "$(mf_group usms-central-errors)" = "$CENTRAL"'
+
+echo "== Metrics =="
+check "namespace $NS has metrics" \
+  'test "$(aws cloudwatch list-metrics --namespace "$NS" --query "length(Metrics)" --output text)" != "0"'
+check "TranscriptsProcessed published WITH dimensions" \
+  'metric_dims TranscriptsProcessed | grep -q Faculty'
+check "TranscriptsProcessed ALSO published with none  (the total)" \
+  'metric_dims TranscriptsProcessed | grep -q NONE'
+check "TranscriptLagSeconds exists" \
+  'test "$(aws cloudwatch list-metrics --namespace "$NS" --metric-name TranscriptLagSeconds --query "length(Metrics)" --output text)" != "0"'
+
+echo "== IAM =="
+check "USMSObservabilityWrite exists" \
+  'obs_policy_arn | grep -q "policy/USMSObservabilityWrite"'
+check "attached to $ROLE_LAMBDA" \
+  'role_has_obs "$ROLE_LAMBDA"'
+check "attached to $ROLE_EC2" \
+  'role_has_obs "$ROLE_EC2"'
+check "PutMetricData is scoped by a cloudwatch:namespace condition" \
+  'obs_policy_doc | grep -q "cloudwatch:namespace"'
+check "log group ARNs end in :*  (streams, not just the group)" \
+  'obs_policy_doc | grep -qE "log-group:/usms/\*:\*"'
+
+echo "== The instrumented notifier =="
+check "$NOTIFIER exists" \
+  'aws lambda get-function-configuration --function-name "$NOTIFIER"'
+check "alias live points at a numbered version" \
+  'alias_version | grep -qE "^[0-9]+$"'
+check "alias live has MOVED PAST Lab 10 version 1" \
+  'test "$(alias_version)" -ge 2'
+check "tracing mode on the alias is Active" \
+  'test "$(aws lambda get-function-configuration --function-name "$NOTIFIER" --qualifier live --query "TracingConfig.Mode" --output text)" = "Active"'
+check "instrumented handler source emits USMS_SUMMARY" \
+  'grep -q "USMS_SUMMARY" labs/lab-13-cloudwatch-xray/transcript-notifier-v2/notifier.py'
+
+echo "== Alarms =="
+check "$A_LAG exists" \
+  'aws cloudwatch describe-alarms --alarm-names "$A_LAG" --query "length(MetricAlarms)" --output text | grep -qv "^0$"'
+check "$A_LAG uses the Maximum statistic, not Average" \
+  'test "$(alarm_field "$A_LAG" Statistic)" = "Maximum"'
+check "$A_LAG treats missing data as notBreaching" \
+  'test "$(alarm_field "$A_LAG" TreatMissingData)" = "notBreaching"'
+check "$A_SILENCE exists" \
+  'aws cloudwatch describe-alarms --alarm-names "$A_SILENCE" --query "length(MetricAlarms)" --output text | grep -qv "^0$"'
+check "$A_SILENCE treats missing data as BREACHING  (it watches an absence)" \
+  'test "$(alarm_field "$A_SILENCE" TreatMissingData)" = "breaching"'
+check "composite alarm $A_COMP exists" \
+  'composite_rule | grep -q ALARM'
+check "composite rule names BOTH child alarms" \
+  'composite_rule | grep -q "$A_LAG" && composite_rule | grep -q "$A_SILENCE"'
+check "no alarm is left stuck in ALARM from Step 20 or 21" \
+  'test "$(alarm_field "$A_LAG" StateValue)" != "ALARM" && test "$(alarm_field "$A_SILENCE" StateValue)" != "ALARM"'
+
+echo "== Dashboard =="
+check "dashboard $DASH exists" \
+  'aws cloudwatch list-dashboards --query "DashboardEntries[].DashboardName" --output text | grep -q "$DASH"'
+check "dashboard body is valid JSON" \
+  'dashboard_body | python3 -m json.tool'
+check "dashboard has 5 widgets" \
+  'test "$(dashboard_widgets)" -eq 5'
+check "no two widgets overlap" \
+  'dashboard_no_overlap'
+
+echo "== X-Ray documents =="
+check "sampling rule document is valid JSON" \
+  'python3 -m json.tool templates/lab-13-sampling-rule.json'
+check "sampling rule declares every required field" \
+  'sampling_rule_complete'
+check "segment documents share one trace id and are well formed" \
+  'segments_consistent'
+
+echo "== Files and Git hygiene =="
+check "configs/lab-13.env exists" \
+  'test -f configs/lab-13.env'
+check "configs/lab-13.env has 28 exports" \
+  'test "$(grep -c "^export" configs/lab-13.env)" -eq 28'
+check "configs/lab-13.env has no empty values" \
+  '! grep -qE "^export [A-Z_]+=$" configs/lab-13.env'
+check "usms-emit-telemetry.sh is executable and valid bash" \
+  'test -x scripts/utilities/usms-emit-telemetry.sh && bash -n scripts/utilities/usms-emit-telemetry.sh'
+check "observability policy document is valid JSON" \
+  'python3 -m json.tool policies/usms-observability-write-policy.json'
+check "dashboard template is committed, not only deployed" \
+  'test -f templates/lab-13-dashboard.json'
+check "no secret is tracked" \
+  '! git ls-files | grep -q "^outputs/"'
+check "no deployment archive is tracked" \
+  '! git ls-files | grep -q "\.zip$"'
+
+echo; echo "PASS=$PASS  FAIL=$FAIL"
+[ "$FAIL" -eq 0 ]
+EOF
+
+chmod +x scripts/utilities/verify-lab-13.sh
+bash -n scripts/utilities/verify-lab-13.sh && echo "syntax OK"
+./scripts/utilities/verify-lab-13.sh
+```
+
+![Verification: verify-lab-13.sh results](../../screenshots/lab13/61.png)
+
+!!! note "Expected failures on Floci"
+    The script has 49 checks. On Floci, the two composite-alarm checks (`composite alarm ... exists` and `composite rule names BOTH child alarms`) are expected to fail, because Floci does not support `PutCompositeAlarm` (Step 21). Any other failure needs fixing.
+
+### Reading the results
+
+| Failing block | Where to look |
+|---|---|
+| Environment | Floci is not running, or is in memory mode. Fix this first. |
+| Log layer | Steps 6 and 7. "Never-expire" means a USMS log group has no retention policy. |
+| Metric filters | Step 9. Check that each filter is attached to the right log group. |
+| Metrics | Step 11. Both the dimensioned series and the total must be published. |
+| IAM | Step 12, and the policy document's condition and ARNs. |
+| Instrumented notifier | Steps 13 and 14. The alias must point at the newest version. |
+| Alarms | Steps 19–21. A stuck `ALARM` state means Step 20 Part 3 was skipped. |
+| Dashboard | Step 22 and `templates/lab-13-dashboard.json`. |
+| X-Ray documents | Steps 15, 16 and 18. Regenerate the segments in one shell session. |
+| Files and Git hygiene | Steps 25 and 26. |
+
+---
+
+## Cleanup
+
+The end-of-course cleanup script deletes resources from the inside out: the composite alarm before its child alarms, and the metric filters before the log group. It asks you to type a confirmation phrase before doing anything. Build it and check its syntax now, but **do not run it** while later labs still need these alarms.
+
+```bash
+cat > scripts/cleanup/lab-13-cleanup.sh << 'EOF'
+#!/usr/bin/env bash
+# END-OF-COURSE CLEANUP for Lab 13. Deletes dependencies inside-out.
+# DO NOT RUN while Lab 09 or anything after it still needs these alarms.
+set -uo pipefail
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$REPO_ROOT"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/course.env"
+# shellcheck disable=SC1091
+source "$REPO_ROOT/configs/lab-13.env" 2>/dev/null || true
+
+CENTRAL="${USMS_LOG_GROUP_CENTRAL:-/usms/central/application}"
+FN_LOG="${USMS_LOG_GROUP_NOTIFIER:-/aws/lambda/usms-transcript-notifier}"
+
+cat << 'WARN'
+This will permanently delete:
+  - usms-transcript-pipeline-down (composite), and its two child alarms
+  - ALL alarm history for them, which is not recoverable
+  - the usms-overview dashboard
+  - the usms-notify-count and usms-central-errors metric filters
+  - /usms/central/application AND EVERY LOG EVENT IN IT
+  - the usms-transcripts-sampling X-Ray rule
+  - USMSObservabilityWrite, after detaching it from two roles
+
+A future alerting lab (not yet written) attaches SNS actions to those alarms by name.
+Metric DATA already published into USMS/Application is not deleted by this
+script and cannot be deleted at all - CloudWatch metrics expire, they are
+never removed. That is worth knowing and is not a bug.
+WARN
+
+printf 'Type exactly: DELETE USMS OBSERVABILITY\n> '
+read -r CONFIRM
+[ "$CONFIRM" = "DELETE USMS OBSERVABILITY" ] || { echo "aborted"; exit 1; }
+
+echo "1/7 deleting the composite alarm first (it references the others)"
+aws cloudwatch delete-alarms --alarm-names usms-transcript-pipeline-down 2>/dev/null \
+  && echo "    deleted usms-transcript-pipeline-down" \
+  || echo "    already absent"
+
+echo "2/7 deleting the child alarms"
+aws cloudwatch delete-alarms \
+  --alarm-names usms-transcript-lag-high usms-notify-silence 2>/dev/null \
+  && echo "    deleted both metric alarms" \
+  || echo "    already absent"
+
+echo "3/7 deleting the dashboard"
+aws cloudwatch delete-dashboards --dashboard-names usms-overview 2>/dev/null \
+  && echo "    deleted usms-overview" \
+  || echo "    already absent"
+
+echo "4/7 deleting the metric filters (stops new data first)"
+aws logs delete-metric-filter --log-group-name "$FN_LOG" \
+  --filter-name usms-notify-count 2>/dev/null || true
+aws logs delete-metric-filter --log-group-name "$CENTRAL" \
+  --filter-name usms-central-errors 2>/dev/null || true
+
+echo "5/7 deleting the central log group and its events"
+aws logs delete-log-group --log-group-name "$CENTRAL" 2>/dev/null \
+  && echo "    deleted $CENTRAL" \
+  || echo "    already absent"
+
+echo "6/7 deleting the X-Ray sampling rule"
+aws xray delete-sampling-rule --rule-name usms-transcripts-sampling 2>/dev/null \
+  && echo "    deleted usms-transcripts-sampling" \
+  || echo "    already absent or unsupported"
+
+echo "7/7 detaching and deleting USMSObservabilityWrite"
+OBS_ARN=$(aws iam list-policies --scope Local \
+  --query "Policies[?PolicyName=='USMSObservabilityWrite'].Arn | [0]" --output text 2>/dev/null)
+if [ -n "$OBS_ARN" ] && [ "$OBS_ARN" != "None" ]; then
+  for role in usms-lambda-exec-role usms-ec2-app-role; do
+    aws iam detach-role-policy --role-name "$role" --policy-arn "$OBS_ARN" 2>/dev/null \
+      && echo "    detached from $role" || true
+  done
+  aws iam delete-policy --policy-arn "$OBS_ARN" 2>/dev/null \
+    && echo "    deleted USMSObservabilityWrite" \
+    || echo "    could not delete - check for remaining attachments"
+fi
+
+echo
+echo "NOT deleted, deliberately:"
+echo "  - the notifier's versions and alias (Lab 10 owns them)"
+echo "  - /aws/lambda/usms-transcript-notifier (Lambda recreates it anyway)"
+echo "  - retention policies on groups this lab did not create"
+echo "  - metric data in USMS/Application (CloudWatch metrics cannot be deleted)"
+EOF
+
+chmod +x scripts/cleanup/lab-13-cleanup.sh
+bash -n scripts/cleanup/lab-13-cleanup.sh && echo "syntax OK - and do not run it"
+```
+
+![Cleanup: Script syntax OK, not executed](../../screenshots/lab13/62.png)
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause and fix |
+|---|---|
+| `put-log-events` rejects events as too old | Timestamps were in seconds. Multiply by 1000 (Step 7). |
+| Metric filter exists but `NotifyCount` has no data | The notifier did not log `USMS_NOTIFY`, or the filter is on the wrong log group. Check Steps 9 and 10. |
+| Only the dimensioned metric appears | Publish the no-dimension total as well (Step 11, Part 1). |
+| `AccessDenied` on `PutMetricData` from the Lambda | The namespace condition doesn't match `USMS/Application`, or the policy isn't attached (Step 12). |
+| `get-function-configuration --qualifier live` shows old code | The alias wasn't moved. Run `update-alias` again with the new version (Steps 13 and 14). |
+| `put-trace-segments` returns unprocessed segments | The trace ID or segment ID format is wrong, or `end_time` is not after `start_time`. Regenerate in one shell. |
+| Annotation search returns 0 for `science` | Annotations must be flat key/value pairs, not nested. Also check that the time window covers when the segment was sent. |
+| Alarms stay `INSUFFICIENT_DATA` | Expected on Floci, which does not evaluate alarms. Use `set-alarm-state` (Step 20). |
+| `put-composite-alarm` fails with `UnsupportedOperation` | Expected on Floci. Keep the error as evidence (Step 21). |
+| `start-query` fails | Logs Insights is not supported. Use Path B in Step 23. |
+| `diff` in Step 24 shows differences | Something did not persist. Check that Floci is not in memory mode. |
+| `lab-13.env` has empty notifier versions | Step 25 ran in a different shell from Steps 13–14. Set `NOTIFIER_V2` and `NOTIFIER_V3` again, then rerun. |
