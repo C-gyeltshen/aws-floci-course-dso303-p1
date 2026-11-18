@@ -1,0 +1,24 @@
+{
+  "name": "usms-student-data",
+  "id": "45a509c32ba970e8",
+  "trace_id": "1-6afd52c3-02da328e5623f50fc4132a8a",
+  "parent_id": "298ed92cfdc0c955",
+  "type": "subsegment",
+  "start_time": 1794986848.271,
+  "end_time": 1794986848.289,
+  "origin": "AWS::S3::Bucket",
+  "http": {
+    "request": {
+      "method": "HEAD",
+      "url": "https://usms-student-data.s3.us-east-1.amazonaws.com/transcripts/science/stu-00417.json"
+    },
+    "response": {
+      "status": 200,
+      "content_length": 2184
+    }
+  },
+  "annotations": {
+    "faculty": "science",
+    "stage": "origin"
+  }
+}
